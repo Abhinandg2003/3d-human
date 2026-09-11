@@ -22,7 +22,7 @@ import {
   Vector3,
 } from "three";
 
-type ViewKey = "reset" | "head" | "heart" | "arms";
+type ViewKey = "reset" | "head" | "heart" | "arms" | "kidney" | "thyroid" | "liver" | "lungs";
 type Mode = "solid" | "dots";
 type Gender = "male" | "female";
 type Vector3Tuple = [number, number, number];
@@ -43,7 +43,11 @@ const VIEWS: Record<
   reset: { label: "Full Body", camPos: [0, 1.4, 3.6], target: [0, 0.9, 0] },
   head: { label: "Head", camPos: [0.25, 1.75, 1.15], target: [0, 1.68, 0] },
   heart: { label: "Heart", camPos: [0.45, 1.45, 1.25], target: [0, 1.38, 0] },
-  arms: { label: "Arms", camPos: [1.7, 1.35, 1.3], target: [0.5, 1.25, 0] },
+  arms: { label: "Arms", camPos: [0.7, 1.35, 1.3], target: [0.5, 1.25, 0] },
+    kidney: { label: "Kidney", camPos: [0, 1.4, 3.6], target: [0, 0.9, 0] },
+  thyroid: { label: "Thyroid", camPos: [0, 1.4, 3.6], target: [0, 0.9, 0] },
+  liver: { label: "Liver", camPos: [0, 1.4, 3.6], target: [0, 0.9, 0] },
+  lungs: { label: "Lungs", camPos: [0, 1.4, 3.6], target: [0, 0.9, 0] },
 };
 
 // Maps each camera-view button to the name of the animation Action/clip it
@@ -56,6 +60,10 @@ const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   head: "head",
   heart: "heart",
   arms: "arm",
+  kidney: "default",
+  thyroid:"default",
+  liver: "default",
+  lungs:"default"
 };
 
 // Maps each view/button to the name of the MATERIAL SLOT (assigned to a
@@ -70,6 +78,10 @@ const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   head: "head2",
   heart: "heart2",
   arms: "hands2",
+  kidney: null,
+  thyroid:null,
+  liver: null,
+  lungs:null
 };
 
 // Tint color for whichever region is currently highlighted. This blends
@@ -88,7 +100,7 @@ const HIGHLIGHT_COLOR = "#78ffa8";
 // smoothstep, and that weight is what actually drives the color blend.
 // Bigger = softer/wider halo around the region, smaller = tighter to the
 // original slot's edge.
-const HIGHLIGHT_BLEND_RADIUS = 0.35;
+const HIGHLIGHT_BLEND_RADIUS = 0.15;
 
 // How fast the color transition eases in when switching views, in
 // roughly 1/seconds -- same exponential-decay idiom as POSE_BLEND_SPEED
@@ -1195,7 +1207,7 @@ export default function ModelScene() {
   const modelPath = MODEL_PATHS[gender];
 
   return (
-    <div className="relative h-dvh w-full" style={{ background: PAGE_BACKGROUND }}>
+    <div className="relative  h-dvh  w-[70vw]" style={{ background: PAGE_BACKGROUND }}>
       <Canvas
         shadows
         gl={{ alpha: true }}
@@ -1243,14 +1255,14 @@ export default function ModelScene() {
         />
       </Canvas>
 
-      <div className="pointer-events-none absolute inset-x-0 top-8 text-center">
+      {/* <div className="pointer-events-none absolute inset-x-0 top-8 text-center">
         <h1 className="text-3xl font-semibold tracking-tight text-slate-900">
           3D Human
         </h1>
-      </div>
+      </div> */}
 
-      <div className="absolute inset-x-0 bottom-8 flex flex-wrap items-center justify-center gap-3 px-4">
-        <button
+      <div className="absolute  top-1/2 -translate-y-1/2 left-2  flex flex-col items-start justify-center gap-3 px-4">
+        {/* <button
           onClick={() => setGender(gender === "male" ? "female" : "male")}
           className={`rounded-full border px-5 py-2 text-sm font-medium backdrop-blur transition-colors ${
             gender === "female"
@@ -1270,7 +1282,7 @@ export default function ModelScene() {
           }`}
         >
           {mode === "solid" ? "Dots" : "Solid"}
-        </button>
+        </button> */}
 
         {(Object.keys(VIEWS) as ViewKey[]).map((key) => (
           <button
@@ -1278,8 +1290,8 @@ export default function ModelScene() {
             onClick={() => setView(key)}
             className={`rounded-full border px-5 py-2 text-sm font-medium backdrop-blur transition-colors ${
               view === key
-                ? "border-blue-400 bg-blue-500/80 text-white"
-                : "border-slate-300 bg-white/70 text-slate-700 hover:bg-slate-100"
+                ? "border-blue-400/0 bg-blue-500/0 text-black shadow-md shadow-black/10  hover:text-black"
+                : "border-slate-300/0 bg-white/0 text-black/50 hover:bg-slate-100/0 hover:text-black"
             }`}
           >
             {VIEWS[key].label}
