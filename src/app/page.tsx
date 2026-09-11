@@ -1,7 +1,21 @@
 import ModelScene from "@/components/ModelScene";
 
+type StatusColor = "green" | "yellow" | "red";
+
 export default function Home() {
-  const healthData = {
+  const healthData: {
+    summary: {
+      title: string;
+      description: string;
+    };
+    metrics: {
+      title: string;
+      value: string;
+      unit: string;
+      status: string;
+      statusColor: StatusColor;
+    }[];
+  } = {
     summary: {
       title: "Heart Health",
       description:
@@ -104,7 +118,7 @@ export default function Home() {
                 </div>
 
                 <div className="flex flex-col">
-                  <span className= {`${styles.bg} ${styles.text}`}>
+                  <span className= {`${styles.text}`}>
                     <span
                       className={`inline-block h-1.5 w-1.5 mr-1 mb-1/2 -translate-y-1/2 rounded-full ${styles.dot}`}
                     />
