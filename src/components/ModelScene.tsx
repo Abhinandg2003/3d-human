@@ -641,7 +641,10 @@ interface ModelSceneProps {
 
 export default function ModelScene({ view, onViewChange }: ModelSceneProps) {
   return (
-    <div className="relative  h-dvh  w-[70vw]" style={{ background: PAGE_BACKGROUND }}>
+    <div
+      className="relative w-full h-[55vh] sm:h-[60vh] lg:h-dvh lg:w-[70vw]"
+      style={{ background: PAGE_BACKGROUND }}
+    >
       <Canvas
         shadows
         gl={{ alpha: true }}
@@ -688,12 +691,12 @@ export default function ModelScene({ view, onViewChange }: ModelSceneProps) {
   <div className="w-full h-full bg-gradient-to-t from-[#fbfbfb] to-transparent" />
 </div>
 
-      <div className="absolute  top-1/2 -translate-y-1/2 left-2  flex flex-col items-start justify-center gap-3 px-4">
+      <div className="absolute  top-1/2 -translate-y-1/2 left-1 sm:left-2  flex flex-col items-start justify-center gap-2 sm:gap-3 px-2 sm:px-4">
         {(Object.keys(VIEWS) as ViewKey[]).map((key) => (
           <button
             key={key}
             onClick={() => onViewChange(key)}
-            className={`rounded-full border px-5 py-2 text-sm font-medium backdrop-blur transition-colors ${
+            className={`rounded-full border px-3 py-1.5 text-xs sm:px-5 sm:py-2 sm:text-sm font-medium backdrop-blur transition-colors ${
               view === key
                 ? "border-blue-400/0 bg-blue-500/0 text-black shadow-md shadow-black/10  hover:text-black"
                 : "border-slate-300/0 bg-white/0 text-black/50 hover:bg-slate-100/0 hover:text-black"

@@ -162,17 +162,17 @@ export default function Home() {
   };
 
   return (
-    <main className="relative flex bg-[#f9f9f9]">
+    <main className="relative flex flex-col lg:flex-row bg-[#f9f9f9]">
  
-      <div className="h-10 w-fit  absolute z-999 top-0  left-0 ml-5 mt-5">
-        <h1 className=" font-semibold text-3xl text-black ">Patient One</h1>
+      <div className="h-10 w-fit  absolute z-999 top-0 right-0  md:left-0 mx-5 mt-5">
+        <h1 className=" font-semibold text-xl md:text-2xl sm:text-3xl text-black ">Patient One</h1>
 
       </div>
       <ModelScene view={view} onViewChange={setView} />
-      <div className="w-full py-20 px-20 flex-col flex items-start justify-center">
-        <div className="flex flex-col  justify-start mb-7 bg-white  px-4 py-2 rounded-lg ">
+      <div className="w-full py-8 px-4 sm:py-12 sm:px-8 lg:py-20 lg:px-20 flex-col flex items-start justify-center">
+        <div className="flex flex-col  justify-start mb-7 bg-white  px-4 py-2 rounded-lg w-full">
           <div className="flex w-full justify-between items-center py-1 mb-3">
-          <h2 className="text-start text-2xl text-black  font-medium">
+          <h2 className="text-start text-xl sm:text-2xl text-black  font-medium">
             {healthData.summary.title}
           </h2>
 
