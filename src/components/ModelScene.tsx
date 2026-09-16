@@ -696,10 +696,10 @@ export default function ModelScene({ view, onViewChange }: ModelSceneProps) {
           <button
             key={key}
             onClick={() => onViewChange(key)}
-            className={`rounded-full border px-3 py-1.5 text-xs sm:px-5 sm:py-2 sm:text-sm font-medium backdrop-blur transition-colors ${
+            className={`rounded-full border px-3 py-1.5 text-sm sm:px-5 sm:py-2 sm:text-sm font-medium backdrop-blur transition-colors ${
               view === key
-                ? "border-blue-400/0 bg-blue-500/0 text-black shadow-md shadow-black/10  hover:text-black"
-                : "border-slate-300/0 bg-white/0 text-black/50 hover:bg-slate-100/0 hover:text-black"
+                ? "border-blue-400/0 bg-white/50 text-black shadow-md shadow-black/10  hover:text-black"
+                : "border-slate-300/0 bg-white/25 text-black/50 hover:bg-slate-100/0 hover:text-black"
             }`}
           >
             {VIEWS[key].label}
