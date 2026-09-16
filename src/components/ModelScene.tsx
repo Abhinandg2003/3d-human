@@ -140,7 +140,7 @@ const FOG_COLOR = "#E6F5F9";
 // CSS radial gradient behind the canvas, centered at the bottom of the
 // viewport and fading from the pale cyan tint out to white.
 const PAGE_BACKGROUND =
-  "#fbfbfb";
+  "#f9f9f9";
 
 interface MeshVertexData {
   mesh: Mesh;
@@ -688,7 +688,7 @@ export default function ModelScene({ view, onViewChange }: ModelSceneProps) {
       </div> */}
 
       <div className="absolute bottom-0 left-0 w-full h-[10vh] z-[999] pointer-events-none">
-  <div className="w-full h-full bg-gradient-to-t from-[#fbfbfb] to-transparent" />
+  <div className="w-full h-full bg-gradient-to-t from-[#f9f9f9] to-transparent" />
 </div>
 
       <div className="absolute  top-1/2 -translate-y-1/2 left-1 sm:left-2  flex flex-col items-start justify-center gap-2 sm:gap-3 px-2 sm:px-4">
