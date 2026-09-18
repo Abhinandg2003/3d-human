@@ -759,7 +759,7 @@ interface ModelSceneProps {
 export default function ModelScene({ view, onViewChange, scores }: ModelSceneProps) {
   return (
     <div
-      className="relative w-full h-[65vh] sm:h-[65vh] lg:h-dvh lg:w-[70vw]"
+      className="relative w-full h-[60vh] sm:h-[60vh] lg:h-dvh lg:w-[70vw]"
       style={{ background: PAGE_BACKGROUND }}
     >
       <Canvas
