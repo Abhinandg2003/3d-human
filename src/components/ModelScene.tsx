@@ -21,25 +21,31 @@ export type ViewKey =
   | "kidney"
   | "thyroid"
   | "liver"
-  | "lungs";
+  | "lungs"
+  | "thighs"
+  | "genitals"
+  | "calves";
 type Vector3Tuple = [number, number, number];
 
 // Male rigged/posable model. (Gender swap removed -- this is the only model
 // the scene renders now.)
-const MODEL_PATH = "/Man_Mesh_clean8.glb";
+const MODEL_PATH = "/Man_Mesh_clean9.glb";
 
 const VIEWS: Record<
   ViewKey,
   { label: string; camPos: Vector3Tuple; target: Vector3Tuple }
 > = {
   reset: { label: "Full Body", camPos: [0, 1.4, 3.6], target: [0, 0.9, 0] },
-  head: { label: "Head", camPos: [0.25, 1.75, 1.15], target: [0, 1.68, 0] },
+  head: { label: "Head", camPos: [0.25, 1.75, 1.15], target: [0, 1.60, 0] },
   heart: { label: "Heart", camPos: [0.45, 1.45, 1.25], target: [0, 1.38, 0] },
   arms: { label: "Arms", camPos: [0.7, 1.35, 1.3], target: [0.5, 1.25, 0] },
     kidney: { label: "Kidney", camPos: [-0.45, 1.25, 1.3], target: [0, 1.18, 0] },
-  thyroid: { label: "Thyroid",  camPos: [0.25, 1.45, 1.15], target: [0, 1.58, 0] },
+  thyroid: { label: "Thyroid",  camPos: [0.25, 1.45, 1.15], target: [0, 1.50, 0] },
   liver: { label: "Liver", camPos: [-0.45, 1.45, 1.25], target: [0, 1.38, 0] },
   lungs: { label: "Lungs", camPos: [-0, 1.45, 1.25], target: [0, 1.38, 0] },
+  thighs: { label: "Thighs", camPos: [-0, 0.65, 1.25], target: [0, 0.75, 0] },
+  genitals: { label: "Genitals", camPos: [-0, 1.2, 1.25], target: [0, .85, 0] },
+  calves: { label: "Calves", camPos: [-0, 0.45, -1.25], target: [0, 0.38, 0] },
 };
 
 // Maps each camera-view button to the name of the animation Action/clip it
@@ -55,7 +61,11 @@ const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   kidney: "default",
   thyroid:"head",
   liver: "default",
-  lungs:"default"
+  lungs:"default",
+  thighs:"default",
+  genitals:"default",
+  calves:"default"
+  
 };
 
 // Maps each view/button to the name of the MATERIAL SLOT (assigned to a
@@ -63,7 +73,7 @@ const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
 // active. This is a separate mapping from POSE_ACTION_NAMES above on
 // purpose -- the pose clip for the arms button is named "arm" (singular),
 // but the material slot covering that same area is named "hands" (see
-// Man_Mesh_clean8.glb's material list). "reset" has no highlighted region
+// Man_Mesh_clean9.glb's material list). "reset" has no highlighted region
 // at all -- clicking it turns every highlight off.
 const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
@@ -73,7 +83,10 @@ const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   kidney: "kidney4",
   thyroid:"thyroid2",
   liver: "liver3",
-  lungs:"lungs3"
+  lungs:"lungs3",
+  thighs:"thighs",
+  genitals:"genitals",
+  calves: "calves"
 };
 
 // Tint color for whichever region is currently highlighted. This blends
@@ -103,7 +116,10 @@ const HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
   thyroid2: 0.15,
   kidney4: 0.25,
   liver3: 0.2,
-  head3: 0.25
+  head3: 0.25,
+  thighs: 0.25,
+  genitals: 0.25,
+  calves: 0.2
 };
 
 function getHighlightBlendRadius(regionName: string): number {
@@ -141,6 +157,100 @@ const FOG_COLOR = "#E6F5F9";
 // viewport and fading from the pale cyan tint out to white.
 const PAGE_BACKGROUND =
   "#f9f9f9";
+
+// ---------------------------------------------------------------------
+// Per-button grade ring. Mirrors the same S/A/B/C/D/E/F -> segments/color
+// mapping used for the big score ring on the main page, just drawn small
+// and placed next to each sidebar button's label. Kept self-contained
+// here (rather than imported from the page) since this component only
+// needs the score number, passed in via the `scores` prop below.
+// ---------------------------------------------------------------------
+type StatusColor = "green" | "yellow" | "red";
+
+const BUTTON_RING_RADIUS = 27;
+const BUTTON_RING_CIRCUMFERENCE = 2 * Math.PI * BUTTON_RING_RADIUS;
+const BUTTON_RING_SEGMENT_COUNT = 6;
+const BUTTON_RING_SEGMENT_GAP = 4;
+const BUTTON_RING_SEGMENT_LENGTH =
+  (BUTTON_RING_CIRCUMFERENCE - BUTTON_RING_SEGMENT_COUNT * BUTTON_RING_SEGMENT_GAP) /
+  BUTTON_RING_SEGMENT_COUNT;
+const BUTTON_RING_TRACK_COLOR = "#e5e7eb";
+
+// Same thresholds as the main page's getGradeLetter.
+function getGradeLetter(score: number): string {
+  if (score >= 85) return "S";
+  if (score >= 70) return "A";
+  if (score >= 55) return "B";
+  if (score >= 40) return "C";
+  if (score >= 25) return "D";
+  if (score >= 10) return "E";
+  return "F";
+}
+
+const BUTTON_RING_SCORE_HEX: Record<StatusColor, string> = {
+  green: "#24bd89",
+  yellow: "#eab308",
+  red: "#ef4444",
+};
+
+// Same grade -> {segments, color} mapping as the main page's
+// GRADE_RING_CONFIG: S = all 6 segments green, A = 5 segments green,
+// B = 4 segments yellow, C = 3 segments yellow, D = 2 segments red,
+// E = 1 segment red, F = 0 segments (all gray/incomplete).
+const BUTTON_GRADE_RING_CONFIG: Record<string, { segments: number; color: StatusColor }> = {
+  S: { segments: 6, color: "green" },
+  A: { segments: 5, color: "green" },
+  B: { segments: 4, color: "yellow" },
+  C: { segments: 3, color: "yellow" },
+  D: { segments: 2, color: "red" },
+  E: { segments: 1, color: "red" },
+  F: { segments: 0, color: "red" },
+};
+
+// Small segmented ring shown to the left of each sidebar button's label,
+// filled in according to that body part's grade (complete ring for a
+// top grade, fewer colored segments -- and more gray -- for a lower one),
+// with the grade letter itself centered inside the ring.
+function ButtonGradeRing({ score }: { score: number }) {
+  const gradeLetter = getGradeLetter(score);
+  const config = BUTTON_GRADE_RING_CONFIG[gradeLetter];
+  const hex = BUTTON_RING_SCORE_HEX[config.color];
+
+  return (
+    <span className="relative inline-flex h-5 w-5 sm:h-6 sm:w-6 shrink-0 items-center justify-center">
+      <svg
+        className="absolute inset-0 h-full w-full -rotate-90"
+        viewBox="0 0 60 60"
+      >
+        {Array.from({ length: BUTTON_RING_SEGMENT_COUNT }).map((_, i) => {
+          const isFilled = i < config.segments;
+          return (
+            <circle
+              key={i}
+              cx="30"
+              cy="30"
+              r={BUTTON_RING_RADIUS}
+              fill="none"
+              stroke={isFilled ? hex : BUTTON_RING_TRACK_COLOR}
+              strokeWidth="6"
+              strokeDasharray={`${BUTTON_RING_SEGMENT_LENGTH} ${
+                BUTTON_RING_CIRCUMFERENCE - BUTTON_RING_SEGMENT_LENGTH
+              }`}
+              strokeDashoffset={-(i * (BUTTON_RING_SEGMENT_LENGTH + BUTTON_RING_SEGMENT_GAP))}
+              strokeLinecap="round"
+            />
+          );
+        })}
+      </svg>
+      <span
+        className="relative text-sm sm:text-[12px] font-semibold leading-none"
+        style={{ color: hex }}
+      >
+        {gradeLetter}
+      </span>
+    </span>
+  );
+}
 
 interface MeshVertexData {
   mesh: Mesh;
@@ -418,7 +528,7 @@ function PosableModel({
     uHighlightColor: { value: new Color(HIGHLIGHT_COLOR) },
   }));
 
-  // Man_Mesh_clean8.glb currently ships with no real texture on any of its
+  // Man_Mesh_clean9.glb currently ships with no real texture on any of its
   // material slots (verified when inspecting the file), which would
   // otherwise render as flat default gray. This replaces every sub-mesh's
   // material with the same placeholder white -- but keeps each material's
@@ -617,7 +727,9 @@ function PosableModel({
 // KEY: the main light. Mostly from the front, nudged slightly left.
 const KEY_LIGHT_POS: Vector3Tuple = [-0, 50, 60];
 const KEY_LIGHT2_POS: Vector3Tuple = [-0, -50, 60];
+const KEY_LIGHT3_POS: Vector3Tuple = [-0, 50, -60];
 const KEY_LIGHT_INTENSITY = 2;
+const KEY_LIGHT3_INTENSITY = 2;
 const KEY_LIGHT2_INTENSITY = .3;
 
 function CameraRig({ view }: { view: ViewKey }) {
@@ -637,9 +749,14 @@ function CameraRig({ view }: { view: ViewKey }) {
 interface ModelSceneProps {
   view: ViewKey;
   onViewChange: (view: ViewKey) => void;
+  // Each body part's 0-100 score, keyed by the same ViewKey used for the
+  // camera/pose buttons -- drives the small grade ring drawn next to each
+  // button's label. Passed down from the page, which already owns this
+  // data in healthDataByView.
+  scores: Record<ViewKey, number>;
 }
 
-export default function ModelScene({ view, onViewChange }: ModelSceneProps) {
+export default function ModelScene({ view, onViewChange, scores }: ModelSceneProps) {
   return (
     <div
       className="relative w-full h-[55vh] sm:h-[60vh] lg:h-dvh lg:w-[70vw]"
@@ -658,6 +775,13 @@ export default function ModelScene({ view, onViewChange }: ModelSceneProps) {
         <directionalLight
           position={KEY_LIGHT_POS}
           intensity={KEY_LIGHT_INTENSITY}
+          castShadow
+          shadow-mapSize={[1024, 1024]}
+        />
+
+        <directionalLight
+          position={KEY_LIGHT3_POS}
+          intensity={KEY_LIGHT3_INTENSITY}
           castShadow
           shadow-mapSize={[1024, 1024]}
         />
@@ -696,12 +820,13 @@ export default function ModelScene({ view, onViewChange }: ModelSceneProps) {
           <button
             key={key}
             onClick={() => onViewChange(key)}
-            className={`rounded-full border px-3 py-1.5 text-sm sm:px-5 sm:py-2 sm:text-sm font-medium backdrop-blur transition-colors ${
+            className={`flex items-center gap-1.5 sm:gap-2 rounded-full border pl-1 pr-3 py-1.5 text-sm sm:pl-1 sm:pr-3 sm:py-1 sm:text-sm font-medium  transition-colors ${
               view === key
-                ? "border-blue-400/0 bg-white/50 text-black shadow-md shadow-black/10  hover:text-black"
-                : "border-slate-300/0 bg-white/25 text-black/50 hover:bg-slate-100/0 hover:text-black"
+                ? "border-blue-400/0 bg-white/50 text-black shadow-md shadow-black/5 backdrop-blur-2xl  hover:text-black"
+                : "border-slate-300/0 bg-white/0 text-black/50 hover:bg-slate-100/0 hover:text-black"
             }`}
           >
+            <ButtonGradeRing score={scores[key]} />
             {VIEWS[key].label}
           </button>
         ))}
