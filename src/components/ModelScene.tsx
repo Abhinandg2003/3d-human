@@ -15,7 +15,7 @@ import {
 
 export type ViewKey =
   | "reset"
-  | "head"
+  | "head2"
   | "heart"
   | "arms"
   | "kidney"
@@ -29,14 +29,14 @@ type Vector3Tuple = [number, number, number];
 
 // Male rigged/posable model. (Gender swap removed -- this is the only model
 // the scene renders now.)
-const MODEL_PATH = "/Man_Mesh_clean9.glb";
+const MODEL_PATH = "/female-rigged-material.glb";
 
 const VIEWS: Record<
   ViewKey,
   { label: string; camPos: Vector3Tuple; target: Vector3Tuple }
 > = {
-  reset: { label: "Full Body", camPos: [0, 1.4, 3.6], target: [0, 0.9, 0] },
-  head: { label: "Head", camPos: [0.25, 1.75, 1.15], target: [0, 1.60, 0] },
+  reset: { label: "Full Body", camPos: [-0.15, 1.45, 1.25], target: [0, 1.38, 0]  },
+  head2: { label: "Brain", camPos: [-0.75, 1.75, 0.85], target: [0, 1.40, 0] },
   heart: { label: "Heart", camPos: [0.45, 1.45, 1.25], target: [0, 1.38, 0] },
   arms: { label: "Arms", camPos: [0.7, 1.35, 1.3], target: [0.5, 1.25, 0] },
     kidney: { label: "Kidney", camPos: [-0.45, 1.25, 1.3], target: [0, 1.18, 0] },
@@ -55,11 +55,11 @@ const VIEWS: Record<
 // to match how the poses are named inside Man_Mesh clean3.glb.
 const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   reset: "default",
-  head: "head",
+  head2: "head2",
   heart: "heart",
   arms: "arm",
   kidney: "default",
-  thyroid:"head",
+  thyroid:"head2",
   liver: "default",
   lungs:"default",
   thighs:"default",
@@ -73,17 +73,17 @@ const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
 // active. This is a separate mapping from POSE_ACTION_NAMES above on
 // purpose -- the pose clip for the arms button is named "arm" (singular),
 // but the material slot covering that same area is named "hands" (see
-// Man_Mesh_clean9.glb's material list). "reset" has no highlighted region
+// female-rigged-material.glb's material list). "reset" has no highlighted region
 // at all -- clicking it turns every highlight off.
 const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
-  head: "head3",
-  heart: "heart3",
-  arms: "hands5",
-  kidney: "kidney4",
-  thyroid:"thyroid2",
-  liver: "liver3",
-  lungs:"lungs3",
+  head2: "femalebrain",
+  heart: "femaleheart",
+  arms: "femalearms",
+  kidney: "femalekidney",
+  thyroid:"femalethyroid",
+  liver: "femaleliver",
+  lungs:"femalelungs",
   thighs:"thighs",
   genitals:"genitals",
   calves: "calves"
@@ -113,10 +113,12 @@ const HIGHLIGHT_BLEND_RADIUS = 0.35;
 // HIGHLIGHT_BLEND_RADIUS. Handy for small/deep organs (kidney, thyroid)
 // that want a tighter halo, or a big one (liver) that wants more spread.
 const HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
-  thyroid2: 0.15,
-  kidney4: 0.25,
-  liver3: 0.2,
-  head3: 0.25,
+  femalethyroid: 0.1,
+  femaleheart: 0.2,
+  femalekidney: 0.2,
+  femaleliver: 0.15,
+  femalebrain: 0.25,
+  femalelungs: 0.15,
   thighs: 0.25,
   genitals: 0.25,
   calves: 0.2
@@ -528,7 +530,7 @@ function PosableModel({
     uHighlightColor: { value: new Color(HIGHLIGHT_COLOR) },
   }));
 
-  // Man_Mesh_clean9.glb currently ships with no real texture on any of its
+  // female-rigged-material.glb currently ships with no real texture on any of its
   // material slots (verified when inspecting the file), which would
   // otherwise render as flat default gray. This replaces every sub-mesh's
   // material with the same placeholder white -- but keeps each material's

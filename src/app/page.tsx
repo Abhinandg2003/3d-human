@@ -53,7 +53,7 @@ const healthDataByView: Record<ViewKey, HealthPanelData> = {
       { title: "Cardio Fitness", value: "46.2", unit: "VO₂ max", status: "Optimal", statusColor: "green" },
     ],
   },
-  head: {
+  head2: {
     summary: {
       title: "Head & Brain Health",
       description:
