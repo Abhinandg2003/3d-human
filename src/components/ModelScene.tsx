@@ -29,7 +29,7 @@ type Vector3Tuple = [number, number, number];
 
 // Male rigged/posable model. (Gender swap removed -- this is the only model
 // the scene renders now.)
-const MODEL_PATH = "/female-rigged-material.glb";
+const MODEL_PATH = "/female-rigged-nomeshsculpt3-best.glb";
 
 const VIEWS: Record<
   ViewKey,
@@ -73,7 +73,7 @@ const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
 // active. This is a separate mapping from POSE_ACTION_NAMES above on
 // purpose -- the pose clip for the arms button is named "arm" (singular),
 // but the material slot covering that same area is named "hands" (see
-// female-rigged-material.glb's material list). "reset" has no highlighted region
+// female-rigged-nomeshsculpt3-best.glb's material list). "reset" has no highlighted region
 // at all -- clicking it turns every highlight off.
 const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
@@ -530,7 +530,7 @@ function PosableModel({
     uHighlightColor: { value: new Color(HIGHLIGHT_COLOR) },
   }));
 
-  // female-rigged-material.glb currently ships with no real texture on any of its
+  // female-rigged-nomeshsculpt3-best.glb currently ships with no real texture on any of its
   // material slots (verified when inspecting the file), which would
   // otherwise render as flat default gray. This replaces every sub-mesh's
   // material with the same placeholder white -- but keeps each material's
