@@ -28,10 +28,7 @@ export type ViewKey =
   | "kidney"
   | "thyroid"
   | "liver"
-  | "lungs"
-  | "thighs"
-  | "genitals"
-  | "calves";
+  | "lungs";
 type Vector3Tuple = [number, number, number];
 
 // Male rigged/posable model. (Gender swap removed -- this is the only model
@@ -50,9 +47,7 @@ const VIEWS: Record<
   thyroid: { label: "Thyroid",  camPos: [0.25, 1.15, 0.7], target: [0, 1.40, 0] },
   liver: { label: "Liver", camPos: [-0.45, 1.25, 0.6], target: [0, 1.18, 0] },
   lungs: { label: "Lungs", camPos: [-0, 1.35, 0.9], target: [0, 1.28, 0] },
-  thighs: { label: "Thighs", camPos: [-0, 0.65, 1.25], target: [0, 0.75, 0] },
-  genitals: { label: "Genitals", camPos: [-0, 1.2, 1.25], target: [0, .85, 0] },
-  calves: { label: "Calves", camPos: [-0, 0.45, -1.25], target: [0, 0.38, 0] },
+
 };
 
 // Maps each camera-view button to the name of the animation Action/clip it
@@ -69,9 +64,7 @@ const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   thyroid:"head2",
   liver: "default",
   lungs:"default",
-  thighs:"default",
-  genitals:"default",
-  calves:"default"
+
   
 };
 
@@ -91,9 +84,7 @@ const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   thyroid:"femalethyroid",
   liver: "femaleliver",
   lungs:"femalelungs",
-  thighs:"thighs",
-  genitals:"genitals",
-  calves: "calves"
+  
 };
 
 // Tint color for whichever region is currently highlighted. This blends
@@ -126,9 +117,7 @@ const HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
   femaleliver: 0.15,
   femalebrain: 0.25,
   femalelungs: 0.15,
-  thighs: 0.25,
-  genitals: 0.25,
-  calves: 0.2
+
 };
 
 function getHighlightBlendRadius(regionName: string): number {
