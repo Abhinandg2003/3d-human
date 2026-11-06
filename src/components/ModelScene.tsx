@@ -14,6 +14,7 @@ import {
   Matrix4,
   Mesh,
   MeshStandardMaterial,
+  NeutralToneMapping,
   Ray,
   Vector3,
 } from "three";
@@ -41,14 +42,14 @@ const VIEWS: Record<
   ViewKey,
   { label: string; camPos: Vector3Tuple; target: Vector3Tuple }
 > = {
-  reset: { label: "Full Body", camPos: [-0.15, 1.45, 1.25], target: [0, 1.38, 0]  },
+  reset: { label: "Full Body", camPos: [-0.25, 1.45, 1.35], target: [-0.1, 1.38, 0]  },
   head2: { label: "Brain", camPos: [-0.75, 1.75, 0.85], target: [0, 1.40, 0] },
   heart: { label: "Heart", camPos: [0.45, 1.45, 1.25], target: [0, 1.38, 0] },
   arms: { label: "Arms", camPos: [0.7, 1.35, 1.3], target: [0.5, 1.25, 0] },
-    kidney: { label: "Kidney", camPos: [-0.45, 1.25, 1.3], target: [0, 1.18, 0] },
-  thyroid: { label: "Thyroid",  camPos: [0.25, 1.45, 1.15], target: [0, 1.50, 0] },
-  liver: { label: "Liver", camPos: [-0.45, 1.45, 1.25], target: [0, 1.38, 0] },
-  lungs: { label: "Lungs", camPos: [-0, 1.45, 1.25], target: [0, 1.38, 0] },
+    kidney: { label: "Kidney", camPos: [0, 1.25, 0.85], target: [0, 1.17, 0] },
+  thyroid: { label: "Thyroid",  camPos: [0.25, 1.15, 0.7], target: [0, 1.40, 0] },
+  liver: { label: "Liver", camPos: [-0.45, 1.25, 0.6], target: [0, 1.18, 0] },
+  lungs: { label: "Lungs", camPos: [-0, 1.35, 0.9], target: [0, 1.28, 0] },
   thighs: { label: "Thighs", camPos: [-0, 0.65, 1.25], target: [0, 0.75, 0] },
   genitals: { label: "Genitals", camPos: [-0, 1.2, 1.25], target: [0, .85, 0] },
   calves: { label: "Calves", camPos: [-0, 0.45, -1.25], target: [0, 0.38, 0] },
@@ -99,7 +100,7 @@ const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
 // directly into the surface's own (placeholder white, for now) albedo --
 // no emissive glow -- so it still reads as a normally-lit surface, just
 // tinted, and swapping in real textures later won't break this.
-const HIGHLIGHT_COLOR = "#82ffa3";
+const HIGHLIGHT_COLOR = "#bfffdb";
 
 // How far (in the model's own unscaled local units -- the same space
 // MAN_MESH_SCALE is later applied to) a highlighted region's color bleeds
@@ -449,10 +450,19 @@ const AO_RAY_DISTANCE = 0.08;
 // Nudges each ray's start off the surface so it doesn't hit its own
 // triangle. Same units as AO_RAY_DISTANCE.
 const AO_RAY_BIAS = 0.002;
-// How strongly the baked value darkens the final light: 0 = off, 1 = a
-// fully enclosed point goes black. This is the main knob for how dark
-// the nostrils/crevices read.
-const AO_STRENGTH = 1.2;
+// How dark the darkest crevices get: 0 = off, 1 = pure black. Clamped to
+// 0..1 in the shader -- above 1 the blend overshoots into negative light
+// and whole recessed areas (e.g. the eyes) turn solid black.
+const AO_STRENGTH = 0.6;
+// Which baked values count as a crevice. Measured on the female model at
+// AO_RAY_DISTANCE 0.08: nostrils ~0.15-0.25, lip line ~0.25-0.5, eyes
+// (recessed behind the lids) ~0.6-0.7, open skin 1. Anything at or below
+// AO_DARK_BELOW gets the full AO_STRENGTH darkening, anything at or above
+// AO_LIGHT_ABOVE gets none, smoothly in between -- so the nostrils always
+// go dark while the eyes stay as bright as the rest of the face. Raise
+// AO_LIGHT_ABOVE past ~0.7 to let the eye sockets darken too.
+const AO_DARK_BELOW = 0.02;
+const AO_LIGHT_ABOVE = 1.3;
 // Fade-in speed once the bake finishes, same exponential-decay idiom as
 // HIGHLIGHT_FADE_SPEED.
 const AO_FADE_SPEED = 3;
@@ -710,7 +720,8 @@ function patchHighlightMaterial(
       )
       .replace(
         "#include <opaque_fragment>",
-        `outgoingLight *= mix( 1.0, vOcclusion, uAOStrength );
+        `float creviceOpen = smoothstep( ${AO_DARK_BELOW.toFixed(4)}, ${AO_LIGHT_ABOVE.toFixed(4)}, vOcclusion );
+        outgoingLight *= mix( 1.0, creviceOpen, clamp( uAOStrength, 0.0, 1.0 ) );
         #include <opaque_fragment>`
       );
   };
@@ -718,7 +729,10 @@ function patchHighlightMaterial(
   // a cached program if three thinks they're equivalent; keying by name
   // (which differs per Blender material slot) keeps each submesh's
   // program distinct and avoids stale-uniform cross-talk between slots.
-  material.customProgramCacheKey = () => `highlight-${material.name}`;
+  // (The AO thresholds are baked into the shader source, so they're part
+  // of the key too -- otherwise editing them wouldn't recompile.)
+  material.customProgramCacheKey = () =>
+    `highlight-${material.name}-${AO_DARK_BELOW}-${AO_LIGHT_ABOVE}`;
 }
 
 /**
@@ -1049,36 +1063,43 @@ function PosableModel({
 // mirrored 1:1 onto the <directionalLight>s in the JSX below; all aim at
 // the origin (the model's feet).
 //
-// TOP (key): above and slightly in front, so the face still catches it.
-const TOP_LIGHT_POS: Vector3Tuple = [10, 60, 30];
-const TOP_LIGHT_INTENSITY = 2;
-// BOTTOM: very weak, from below/front -- just keeps under the chin and
-// arms from going dead black.
+// The overall look is high-key: bright, low-contrast fill so the white
+// body melts into the white page background, with only the crevices
+// (via the AO above) and soft partial shadows giving it shape.
+//
+// TOP (key): above and in front. ~45 degrees up rather than steeper, so
+// the brow doesn't throw the eye sockets into deep shadow.
+const TOP_LIGHT_POS: Vector3Tuple = [10, 45, 45];
+const TOP_LIGHT_INTENSITY = 1.6;
+// BOTTOM: weak, from below/front -- lifts under the chin and arms.
 const BOTTOM_LIGHT_POS: Vector3Tuple = [0, -50, 40];
-const BOTTOM_LIGHT_INTENSITY = 0.15;
+const BOTTOM_LIGHT_INTENSITY = 0.25;
 // LEFT / RIGHT: side fills at roughly chest height, slightly in front.
 const LEFT_LIGHT_POS: Vector3Tuple = [-60, 15, 20];
-const LEFT_LIGHT_INTENSITY = 0.45;
+const LEFT_LIGHT_INTENSITY = 0.55;
 const RIGHT_LIGHT_POS: Vector3Tuple = [60, 15, 20];
-const RIGHT_LIGHT_INTENSITY = 0.45;
-// BACK: rim light from behind and above, separates the silhouette from
-// the background.
+const RIGHT_LIGHT_INTENSITY = 0.55;
+// BACK: rim light from behind and above, brightens the silhouette edge
+// so it fades into the background instead of outlining it.
 const BACK_LIGHT_POS: Vector3Tuple = [0, 40, -60];
-const BACK_LIGHT_INTENSITY = 0.7;
+const BACK_LIGHT_INTENSITY = 0.9;
 
 // Sky/ground ambient (replaces the old flat ambientLight): surfaces
-// facing up get the sky color, surfaces facing down the darker ground
-// color, so the base fill is already a little lower under the nose/chin.
+// facing up get the sky color, surfaces facing down the (only slightly
+// darker) ground color. This is the main "softness" knob -- higher
+// intensity / lighter ground = flatter, whiter, more washed into the bg.
 const HEMI_SKY_COLOR = "#ffffff";
-const HEMI_GROUND_COLOR = "#9a9590";
-const HEMI_INTENSITY = 0.8;
+const HEMI_GROUND_COLOR = "#dcd9d5";
+const HEMI_INTENSITY = 1.4;
 
 // Top light's shadow. The default shadow camera covers 10x10 units -- at
 // 2048px that's still ~5mm/texel; fitting it around the body (~1.6 tall
 // after MAN_MESH_SCALE, at the origin) gives ~1mm. near/far bracket the
-// light's ~68-unit distance for depth precision. radius blurs the edge
+// light's ~64-unit distance for depth precision. radius blurs the edge
 // (soft shadows with the "percentage" shadow type set on <Canvas>);
-// the biases suppress acne on the skinned mesh.
+// intensity < 1 makes shadows only partially block the light, so they
+// read as soft shading instead of dark patches; the biases suppress acne
+// on the skinned mesh.
 const TOP_LIGHT_SHADOW = {
   "shadow-mapSize": [2048, 2048] as [number, number],
   "shadow-camera-left": -1.2,
@@ -1087,9 +1108,10 @@ const TOP_LIGHT_SHADOW = {
   "shadow-camera-bottom": -1.2,
   "shadow-camera-near": 55,
   "shadow-camera-far": 80,
-  "shadow-radius": 6,
+  "shadow-radius": 8,
+  "shadow-intensity": 0.1,
   "shadow-bias": -0.0005,
-  "shadow-normalBias": 0.01,
+  "shadow-normalBias": 0.02,
 };
 
 function CameraRig({ view }: { view: ViewKey }) {
@@ -1128,6 +1150,14 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
         // warns and falls back anyway); softness comes from shadow-radius.
         shadows="percentage"
         gl={{ alpha: true }}
+        // R3F defaults to ACES tone mapping, which pulls pure white down to
+        // a light grey -- the model could never match the white page. The
+        // Khronos "Neutral" curve keeps whites white, so brightly lit skin
+        // blends into the background. (R3F only sets tone mapping once at
+        // creation, so overriding it here sticks.)
+        onCreated={({ gl }) => {
+          gl.toneMapping = NeutralToneMapping;
+        }}
         camera={{ position: VIEWS.reset.camPos, fov: 40 }}
         className="h-full w-full"
       >
