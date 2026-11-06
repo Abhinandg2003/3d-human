@@ -5,13 +5,19 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { useGLTF, ContactShadows, useAnimations } from "@react-three/drei";
 import {
   BufferAttribute,
+  BufferGeometry,
   Color,
+  DoubleSide,
   Group,
   LoopOnce,
+  Matrix3,
+  Matrix4,
   Mesh,
   MeshStandardMaterial,
+  Ray,
   Vector3,
 } from "three";
+import { MeshBVH } from "three-mesh-bvh";
 
 export type ViewKey =
   | "reset"
@@ -411,6 +417,235 @@ function buildVertexHighlightFields(
   return result;
 }
 
+// ---------------------------------------------------------------------
+// Crevice darkening (per-vertex ambient occlusion, baked in-browser).
+//
+// Real-time lights only look at which way a surface faces, never at
+// whether the body itself is in the way -- so the inside walls of the
+// nostrils (and ears, eye sockets, between fingers) get lit by every
+// light they face, often brighter than the skin around them. To fix
+// that, every vertex gets a 0..1 "how open is this point" value: 1 out
+// in the open, near 0 deep inside a cavity. The patched material then
+// multiplies ALL of the final light (every directional light + the
+// hemisphere fill, diffuse and specular) by it, so adding more soft fill
+// lights can never brighten the crevices again.
+//
+// Computed once on load by casting short rays from each vertex out over
+// the hemisphere around its normal (through a BVH so it stays fast), in
+// the GLB's rest pose -- like the highlight fields, it doesn't need
+// recomputing per pose. Measured at ~1.2s total for the ~17k-vertex
+// female model at 16 rays, so it's spread across frames (see
+// AO_BAKE_BUDGET_MS) instead of freezing the page, and fades in when done.
+// ---------------------------------------------------------------------
+
+// Rays per vertex. 16 + the smoothing pass below gave the same darkness
+// distribution as 32 at half the cost. More = smoother, slower load.
+const AO_RAY_COUNT = 16;
+// How far a ray looks for blocking geometry, in the GLB's own unscaled
+// units (the female model is ~4.43 units tall, so 0.1 is a few cm on the
+// rendered body). Big enough to catch nostrils, ears and eye sockets;
+// raise it to also darken broader areas like armpits / between the legs.
+const AO_RAY_DISTANCE = 0.08;
+// Nudges each ray's start off the surface so it doesn't hit its own
+// triangle. Same units as AO_RAY_DISTANCE.
+const AO_RAY_BIAS = 0.002;
+// How strongly the baked value darkens the final light: 0 = off, 1 = a
+// fully enclosed point goes black. This is the main knob for how dark
+// the nostrils/crevices read.
+const AO_STRENGTH = 1.2;
+// Fade-in speed once the bake finishes, same exponential-decay idiom as
+// HIGHLIGHT_FADE_SPEED.
+const AO_FADE_SPEED = 3;
+// Max milliseconds of bake work per animation frame.
+const AO_BAKE_BUDGET_MS = 8;
+
+/**
+ * Generator so the caller can run it a slice at a time (it yields every
+ * few dozen vertices). Returns a Map from mesh.uuid to one 0..1 openness
+ * value per vertex, in that mesh's own vertex order -- same shape as the
+ * highlight fields, so it drops straight into a BufferAttribute.
+ */
+function* bakeVertexOcclusion(
+  scene: Group
+): Generator<void, Map<string, Float32Array>, void> {
+  scene.updateMatrixWorld(true);
+
+  const meshes: Mesh[] = [];
+  scene.traverse((obj) => {
+    const mesh = obj as Mesh;
+    if (!mesh.isMesh) return;
+    const { position, normal } = mesh.geometry.attributes;
+    if (position && normal) meshes.push(mesh);
+  });
+  if (meshes.length === 0) return new Map();
+
+  // Merge every submesh (material slot) into one triangle soup, so a ray
+  // from the body can be blocked by any slot -- e.g. a nostril vertex in
+  // "Scene_-_Root" by the "femalebrain" faces.
+  //
+  // The shared space is the FIRST mesh's own geometry space, NOT the
+  // scene's: the body is skinned under an "Armature" node scaled ~0.026,
+  // which the bones cancel out at render time -- so in scene space the
+  // bind-pose geometry is ~38x too small and every AO_* distance below
+  // would be off by that much (rays started outside the nostrils and
+  // never registered them). In geometry space the body is ~4.43 units
+  // tall, which is what AO_RAY_DISTANCE / AO_RAY_BIAS are tuned against.
+  const referenceInverse = new Matrix4().copy(meshes[0].matrixWorld).invert();
+  let vertTotal = 0;
+  let indexTotal = 0;
+  for (const mesh of meshes) {
+    const count = mesh.geometry.attributes.position.count;
+    vertTotal += count;
+    indexTotal += mesh.geometry.index?.count ?? count;
+  }
+  const positions = new Float32Array(vertTotal * 3);
+  const normals = new Float32Array(vertTotal * 3);
+  const index = new Uint32Array(indexTotal);
+  const toReference = new Matrix4();
+  const normalMatrix = new Matrix3();
+  const v = new Vector3();
+  let vertOffset = 0;
+  let indexOffset = 0;
+  for (const mesh of meshes) {
+    const { position, normal } = mesh.geometry.attributes;
+    toReference.multiplyMatrices(referenceInverse, mesh.matrixWorld);
+    normalMatrix.getNormalMatrix(toReference);
+    for (let i = 0; i < position.count; i++) {
+      v.fromBufferAttribute(position, i).applyMatrix4(toReference);
+      v.toArray(positions, (vertOffset + i) * 3);
+      v.fromBufferAttribute(normal, i).applyMatrix3(normalMatrix).normalize();
+      v.toArray(normals, (vertOffset + i) * 3);
+    }
+    const srcIndex = mesh.geometry.index;
+    const count = srcIndex?.count ?? position.count;
+    for (let i = 0; i < count; i++) {
+      index[indexOffset + i] = (srcIndex ? srcIndex.getX(i) : i) + vertOffset;
+    }
+    vertOffset += position.count;
+    indexOffset += count;
+  }
+
+  const merged = new BufferGeometry();
+  merged.setAttribute("position", new BufferAttribute(positions, 3));
+  merged.setIndex(new BufferAttribute(index, 1));
+  const bvh = new MeshBVH(merged);
+  yield;
+
+  // Cosine-weighted directions over the +Z hemisphere (golden-angle
+  // spiral), so every hit counts equally and grazing rays matter least --
+  // the same weighting diffuse light itself has.
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const samples: Vector3Tuple[] = [];
+  for (let s = 0; s < AO_RAY_COUNT; s++) {
+    const u = (s + 0.5) / AO_RAY_COUNT;
+    const r = Math.sqrt(u);
+    samples.push([r * Math.cos(s * goldenAngle), r * Math.sin(s * goldenAngle), Math.sqrt(1 - u)]);
+  }
+
+  const ray = new Ray();
+  const openness = new Float32Array(vertTotal);
+  for (let i = 0; i < vertTotal; i++) {
+    const px = positions[i * 3];
+    const py = positions[i * 3 + 1];
+    const pz = positions[i * 3 + 2];
+    const nx = normals[i * 3];
+    const ny = normals[i * 3 + 1];
+    const nz = normals[i * 3 + 2];
+
+    // Tangent (t) / bitangent (b) around the normal, branch-free
+    // (Duff et al. 2017) -- turns the +Z samples into this vertex's
+    // hemisphere.
+    const sign = nz >= 0 ? 1 : -1;
+    const a = -1 / (sign + nz);
+    const b = nx * ny * a;
+    const tx = 1 + sign * nx * nx * a, ty = sign * b, tz = -sign * nx;
+    const bx = b, by = sign + ny * ny * a, bz = -ny;
+
+    // Spin the sample pattern per vertex to avoid banding. Hashed from
+    // the POSITION (not the index) so the duplicate vertices Blender
+    // splits along UV/material seams get identical results -- otherwise
+    // the seams would show as faint lines.
+    const h = Math.sin(px * 12.9898 + py * 78.233 + pz * 37.719) * 43758.5453;
+    const spin = (h - Math.floor(h)) * Math.PI * 2;
+    const cos = Math.cos(spin);
+    const sin = Math.sin(spin);
+
+    let occluded = 0;
+    for (const [sx0, sy0, sz] of samples) {
+      const sx = sx0 * cos - sy0 * sin;
+      const sy = sx0 * sin + sy0 * cos;
+      ray.origin.set(px + nx * AO_RAY_BIAS, py + ny * AO_RAY_BIAS, pz + nz * AO_RAY_BIAS);
+      ray.direction.set(
+        tx * sx + bx * sy + nx * sz,
+        ty * sx + by * sy + ny * sz,
+        tz * sx + bz * sy + nz * sz
+      );
+      const hit = bvh.raycastFirst(ray, DoubleSide, 0, AO_RAY_DISTANCE);
+      // Closer blockers occlude more -- softens the edge of each cavity.
+      if (hit) occluded += 1 - hit.distance / AO_RAY_DISTANCE;
+    }
+    openness[i] = 1 - occluded / AO_RAY_COUNT;
+
+    if ((i & 31) === 31) yield;
+  }
+  merged.dispose();
+
+  // One smoothing pass over the triangle mesh to wash out sampling noise,
+  // done on welded vertices (same quantized position = same vertex) so
+  // seam duplicates stay identical.
+  const weldIds = new Int32Array(vertTotal);
+  const weldKeys = new Map<string, number>();
+  for (let i = 0; i < vertTotal; i++) {
+    const key = `${Math.round(positions[i * 3] * 1e4)},${Math.round(positions[i * 3 + 1] * 1e4)},${Math.round(positions[i * 3 + 2] * 1e4)}`;
+    let id = weldKeys.get(key);
+    if (id === undefined) {
+      id = weldKeys.size;
+      weldKeys.set(key, id);
+    }
+    weldIds[i] = id;
+  }
+  const weldCount = weldKeys.size;
+  const own = new Float32Array(weldCount);
+  const ownCount = new Float32Array(weldCount);
+  for (let i = 0; i < vertTotal; i++) {
+    own[weldIds[i]] += openness[i];
+    ownCount[weldIds[i]] += 1;
+  }
+  for (let w = 0; w < weldCount; w++) own[w] /= ownCount[w];
+
+  const neighborSum = new Float32Array(weldCount);
+  const neighborCount = new Float32Array(weldCount);
+  for (let t = 0; t < indexTotal; t += 3) {
+    const ia = weldIds[index[t]];
+    const ib = weldIds[index[t + 1]];
+    const ic = weldIds[index[t + 2]];
+    neighborSum[ia] += own[ib] + own[ic];
+    neighborSum[ib] += own[ia] + own[ic];
+    neighborSum[ic] += own[ia] + own[ib];
+    neighborCount[ia] += 2;
+    neighborCount[ib] += 2;
+    neighborCount[ic] += 2;
+  }
+  // Each vertex keeps a bit more of its own value than any one neighbor.
+  const SELF_WEIGHT = 4;
+  const smoothed = new Float32Array(weldCount);
+  for (let w = 0; w < weldCount; w++) {
+    smoothed[w] =
+      (own[w] * SELF_WEIGHT + neighborSum[w]) / (SELF_WEIGHT + neighborCount[w]);
+  }
+
+  const result = new Map<string, Float32Array>();
+  let offset = 0;
+  for (const mesh of meshes) {
+    const count = mesh.geometry.attributes.position.count;
+    const values = new Float32Array(count);
+    for (let i = 0; i < count; i++) values[i] = smoothed[weldIds[offset + i]];
+    result.set(mesh.uuid, values);
+    offset += count;
+  }
+  return result;
+}
+
 /**
  * Patches a MeshStandardMaterial (via onBeforeCompile, the standard
  * three.js hook for this) so it blends in `uHighlightColor` based on a
@@ -422,14 +657,25 @@ function buildVertexHighlightFields(
  * uniforms is a plain object (not per-material state) shared by every
  * submesh's material, so animating uBlend.value once in useFrame updates
  * every submesh at once without needing a material reference per mesh.
+ *
+ * Also applies the baked crevice darkening (aOcclusion, see
+ * bakeVertexOcclusion) to the FINAL lit color -- after every light has
+ * been summed -- rather than through three's own aoMap, which only
+ * darkens ambient/indirect light and would leave the directional lights
+ * still shining into the nostrils.
  */
 function patchHighlightMaterial(
   material: MeshStandardMaterial,
-  uniforms: { uBlend: { value: number }; uHighlightColor: { value: Color } }
+  uniforms: {
+    uBlend: { value: number };
+    uHighlightColor: { value: Color };
+    uAOStrength: { value: number };
+  }
 ) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uBlend = uniforms.uBlend;
     shader.uniforms.uHighlightColor = uniforms.uHighlightColor;
+    shader.uniforms.uAOStrength = uniforms.uAOStrength;
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -437,13 +683,16 @@ function patchHighlightMaterial(
         `#include <common>
         attribute float aHighlightFrom;
         attribute float aHighlightTo;
+        attribute float aOcclusion;
         uniform float uBlend;
-        varying float vHighlight;`
+        varying float vHighlight;
+        varying float vOcclusion;`
       )
       .replace(
         "#include <begin_vertex>",
         `#include <begin_vertex>
-        vHighlight = mix(aHighlightFrom, aHighlightTo, uBlend);`
+        vHighlight = mix(aHighlightFrom, aHighlightTo, uBlend);
+        vOcclusion = aOcclusion;`
       );
 
     shader.fragmentShader = shader.fragmentShader
@@ -451,11 +700,18 @@ function patchHighlightMaterial(
         "#include <common>",
         `#include <common>
         uniform vec3 uHighlightColor;
-        varying float vHighlight;`
+        uniform float uAOStrength;
+        varying float vHighlight;
+        varying float vOcclusion;`
       )
       .replace(
         "vec4 diffuseColor = vec4( diffuse, opacity );",
         `vec4 diffuseColor = vec4( mix( diffuse, uHighlightColor, vHighlight ), opacity );`
+      )
+      .replace(
+        "#include <opaque_fragment>",
+        `outgoingLight *= mix( 1.0, vOcclusion, uAOStrength );
+        #include <opaque_fragment>`
       );
   };
   // Materials with different onBeforeCompile closures can end up sharing
@@ -525,10 +781,15 @@ function PosableModel({
 
   // Shared by every submesh's patched material (see patchHighlightMaterial)
   // so animating uBlend once in useFrame updates the whole model at once.
+  // uAOStrength starts at 0 (no crevice darkening) and eases up to
+  // AO_STRENGTH in useFrame once the occlusion bake has finished.
   const [highlightUniforms] = useState(() => ({
     uBlend: { value: 0 },
     uHighlightColor: { value: new Color(HIGHLIGHT_COLOR) },
+    uAOStrength: { value: 0 },
   }));
+  // Target for uAOStrength -- flipped to AO_STRENGTH when the bake lands.
+  const aoTargetStrength = useRef(0);
 
   // female-rigged-nomeshsculpt3-best.glb currently ships with no real texture on any of its
   // material slots (verified when inspecting the file), which would
@@ -586,6 +847,12 @@ function PosableModel({
         patchHighlightMaterial(finalMat, highlightUniforms);
       }
 
+      // <Canvas shadows> + castShadow on a light only enable shadow maps;
+      // each mesh still has to opt in, or the body never shadows itself
+      // (nose onto upper lip, chin onto neck, arms onto torso).
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+
       const vertCount = mesh.geometry.attributes.position.count;
       mesh.geometry.setAttribute(
         "aHighlightFrom",
@@ -595,8 +862,53 @@ function PosableModel({
         "aHighlightTo",
         new BufferAttribute(new Float32Array(vertCount), 1)
       );
+      // Fully open (1) until the occlusion bake below fills in real values.
+      // Kept in place if a bake already filled it (e.g. a remount reusing
+      // useGLTF's cached scene).
+      if (!mesh.geometry.getAttribute("aOcclusion")) {
+        mesh.geometry.setAttribute(
+          "aOcclusion",
+          new BufferAttribute(new Float32Array(vertCount).fill(1), 1)
+        );
+      }
     });
   }, [scene, highlightUniforms]);
+
+  // Bake the crevice darkening (see bakeVertexOcclusion) a few
+  // milliseconds per frame so the page stays responsive while it runs,
+  // then write the results into each mesh's aOcclusion attribute and let
+  // useFrame fade the effect in. Cancelled cleanly if the model unmounts
+  // mid-bake (or React's dev StrictMode double-runs this effect).
+  useEffect(() => {
+    const bake = bakeVertexOcclusion(scene);
+    let frame = 0;
+
+    const step = () => {
+      const deadline = performance.now() + AO_BAKE_BUDGET_MS;
+      while (performance.now() < deadline) {
+        const next = bake.next();
+        if (!next.done) continue;
+
+        scene.traverse((obj) => {
+          const mesh = obj as Mesh;
+          if (!mesh.isMesh) return;
+          const values = next.value.get(mesh.uuid);
+          const attr = mesh.geometry.getAttribute("aOcclusion") as
+            | BufferAttribute
+            | undefined;
+          if (!values || !attr) return;
+          (attr.array as Float32Array).set(values);
+          attr.needsUpdate = true;
+        });
+        aoTargetStrength.current = AO_STRENGTH;
+        return;
+      }
+      frame = requestAnimationFrame(step);
+    };
+
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [scene]);
 
   // Button click (or initial mount) -- just record which pose SHOULD be
   // active. All the actual weight blending happens continuously in
@@ -714,6 +1026,12 @@ function PosableModel({
     // object (see highlightUniforms / patchHighlightMaterial).
     const hk = 1 - Math.exp(-delta * HIGHLIGHT_FADE_SPEED);
     highlightUniforms.uBlend.value += (1 - highlightUniforms.uBlend.value) * hk;
+
+    // Same easing for the crevice darkening, from 0 up to AO_STRENGTH
+    // once the bake has landed (see aoTargetStrength).
+    const ak = 1 - Math.exp(-delta * AO_FADE_SPEED);
+    highlightUniforms.uAOStrength.value +=
+      (aoTargetStrength.current - highlightUniforms.uAOStrength.value) * ak;
   });
 
   return (
@@ -723,16 +1041,56 @@ function PosableModel({
   );
 }
 
-// Three-point lighting setup. Positions here are mirrored 1:1 onto the real
-// <directionalLight> objects in the JSX below.
+// Soft studio lighting: one shadow-casting light from the top, plus weak
+// fills from below, left, right and behind to lift and soften what the
+// top light leaves dark. The fills deliberately cast no shadows (cheaper,
+// and their job is to soften) -- the crevice darkening above is what
+// keeps nostrils/ears dark however many fills there are. Positions are
+// mirrored 1:1 onto the <directionalLight>s in the JSX below; all aim at
+// the origin (the model's feet).
 //
-// KEY: the main light. Mostly from the front, nudged slightly left.
-const KEY_LIGHT_POS: Vector3Tuple = [-0, 50, 60];
-const KEY_LIGHT2_POS: Vector3Tuple = [-0, -50, 60];
-const KEY_LIGHT3_POS: Vector3Tuple = [-0, 50, -60];
-const KEY_LIGHT_INTENSITY = 2;
-const KEY_LIGHT3_INTENSITY = 2;
-const KEY_LIGHT2_INTENSITY = .3;
+// TOP (key): above and slightly in front, so the face still catches it.
+const TOP_LIGHT_POS: Vector3Tuple = [10, 60, 30];
+const TOP_LIGHT_INTENSITY = 2;
+// BOTTOM: very weak, from below/front -- just keeps under the chin and
+// arms from going dead black.
+const BOTTOM_LIGHT_POS: Vector3Tuple = [0, -50, 40];
+const BOTTOM_LIGHT_INTENSITY = 0.15;
+// LEFT / RIGHT: side fills at roughly chest height, slightly in front.
+const LEFT_LIGHT_POS: Vector3Tuple = [-60, 15, 20];
+const LEFT_LIGHT_INTENSITY = 0.45;
+const RIGHT_LIGHT_POS: Vector3Tuple = [60, 15, 20];
+const RIGHT_LIGHT_INTENSITY = 0.45;
+// BACK: rim light from behind and above, separates the silhouette from
+// the background.
+const BACK_LIGHT_POS: Vector3Tuple = [0, 40, -60];
+const BACK_LIGHT_INTENSITY = 0.7;
+
+// Sky/ground ambient (replaces the old flat ambientLight): surfaces
+// facing up get the sky color, surfaces facing down the darker ground
+// color, so the base fill is already a little lower under the nose/chin.
+const HEMI_SKY_COLOR = "#ffffff";
+const HEMI_GROUND_COLOR = "#9a9590";
+const HEMI_INTENSITY = 0.8;
+
+// Top light's shadow. The default shadow camera covers 10x10 units -- at
+// 2048px that's still ~5mm/texel; fitting it around the body (~1.6 tall
+// after MAN_MESH_SCALE, at the origin) gives ~1mm. near/far bracket the
+// light's ~68-unit distance for depth precision. radius blurs the edge
+// (soft shadows with the "percentage" shadow type set on <Canvas>);
+// the biases suppress acne on the skinned mesh.
+const TOP_LIGHT_SHADOW = {
+  "shadow-mapSize": [2048, 2048] as [number, number],
+  "shadow-camera-left": -1.2,
+  "shadow-camera-right": 1.2,
+  "shadow-camera-top": 1.2,
+  "shadow-camera-bottom": -1.2,
+  "shadow-camera-near": 55,
+  "shadow-camera-far": 80,
+  "shadow-radius": 6,
+  "shadow-bias": -0.0005,
+  "shadow-normalBias": 0.01,
+};
 
 function CameraRig({ view }: { view: ViewKey }) {
   const target = useRef(new Vector3(...VIEWS.reset.target));
@@ -765,35 +1123,31 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
       style={{ background: PAGE_BACKGROUND }}
     >
       <Canvas
-        shadows
+        // "percentage" = PCFShadowMap. Plain `shadows` picks
+        // PCFSoftShadowMap, which this three version has deprecated (it
+        // warns and falls back anyway); softness comes from shadow-radius.
+        shadows="percentage"
         gl={{ alpha: true }}
         camera={{ position: VIEWS.reset.camPos, fov: 40 }}
         className="h-full w-full"
       >
         <fog attach="fog" args={[FOG_COLOR, 6, 16]} />
 
-        <ambientLight intensity={1} />
-        {/* Key light: front, nudged slightly left. */}
-        <directionalLight
-          position={KEY_LIGHT_POS}
-          intensity={KEY_LIGHT_INTENSITY}
-          castShadow
-          shadow-mapSize={[1024, 1024]}
+        <hemisphereLight
+          args={[HEMI_SKY_COLOR, HEMI_GROUND_COLOR, HEMI_INTENSITY]}
         />
-
+        {/* Top (key) light -- the only one casting shadows. */}
         <directionalLight
-          position={KEY_LIGHT3_POS}
-          intensity={KEY_LIGHT3_INTENSITY}
+          position={TOP_LIGHT_POS}
+          intensity={TOP_LIGHT_INTENSITY}
           castShadow
-          shadow-mapSize={[1024, 1024]}
+          {...TOP_LIGHT_SHADOW}
         />
-
-        <directionalLight
-          position={KEY_LIGHT2_POS}
-          intensity={KEY_LIGHT2_INTENSITY}
-          castShadow
-          shadow-mapSize={[1024, 1024]}
-        />
+        {/* Soft fills: bottom, left, right, back. No shadows. */}
+        <directionalLight position={BOTTOM_LIGHT_POS} intensity={BOTTOM_LIGHT_INTENSITY} />
+        <directionalLight position={LEFT_LIGHT_POS} intensity={LEFT_LIGHT_INTENSITY} />
+        <directionalLight position={RIGHT_LIGHT_POS} intensity={RIGHT_LIGHT_INTENSITY} />
+        <directionalLight position={BACK_LIGHT_POS} intensity={BACK_LIGHT_INTENSITY} />
 
         <PosableModel key={MODEL_PATH} modelPath={MODEL_PATH} view={view} />
         <CameraRig view={view} />
