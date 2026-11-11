@@ -4,21 +4,33 @@ import { useEffect, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useGLTF, ContactShadows, useAnimations } from "@react-three/drei";
 import {
+  Bone,
   BufferAttribute,
   BufferGeometry,
   Color,
+  DepthTexture,
   DoubleSide,
   Group,
+  InstancedBufferAttribute,
+  InstancedBufferGeometry,
   LoopOnce,
   Matrix3,
   Matrix4,
   Material,
   Mesh,
   MeshBasicMaterial,
-  MeshStandardMaterial,
   NeutralToneMapping,
+  PerspectiveCamera,
   Ray,
+  ShaderMaterial,
+  SkinnedMesh,
+  Texture,
+  Triangle,
+  UniformsLib,
+  UniformsUtils,
+  Vector2,
   Vector3,
+  WebGLRenderTarget,
 } from "three";
 import { MeshBVH } from "three-mesh-bvh";
 
@@ -35,7 +47,7 @@ type Vector3Tuple = [number, number, number];
 
 // Male rigged/posable model. (Gender swap removed -- this is the only model
 // the scene renders now.)
-const MODEL_PATH = "/female-rigged-nomeshsculpt3-best.glb";
+const MODEL_PATH = "/female-rigged-nomeshsculpt3-meshedited.glb";
 
 const VIEWS: Record<
   ViewKey,
@@ -59,7 +71,7 @@ const VIEWS: Record<
 // to match how the poses are named inside Man_Mesh clean3.glb.
 const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   reset: "default",
-  head2: "head2",
+  head2: "default",
   heart: "heart",
   arms: "arm",
   kidney: "default",
@@ -75,11 +87,11 @@ const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
 // active. This is a separate mapping from POSE_ACTION_NAMES above on
 // purpose -- the pose clip for the arms button is named "arm" (singular),
 // but the material slot covering that same area is named "hands" (see
-// female-rigged-nomeshsculpt3-best.glb's material list). "reset" has no highlighted region
+// female-rigged-nomeshsculpt3-meshedited.glb's material list). "reset" has no highlighted region
 // at all -- clicking it turns every highlight off.
 const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
-  head2: "femalebrain",
+  head2: "femalebrainfinal",
   heart: "femaleheart",
   arms: "femalearms",
   kidney: "femalekidney",
@@ -90,19 +102,20 @@ const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
 };
 
 // ---------------------------------------------------------------------
-// Dotted look. The body itself is invisible -- only a regular grid of
-// dots printed on the skin is drawn, with the page background showing
-// between them. See patchDotMaterial for how it works.
+// Dotted look. The body itself is invisible -- only dots pinned to its
+// skin are drawn, each one a flat round dot facing the screen, with the
+// page background showing between them. See placeSurfaceDots and
+// DOT_VERTEX_SHADER for how it works.
 // ---------------------------------------------------------------------
 
 // Resting dot color: a soft, low-saturation cyan that sits well on the
 // white page.
-const DOT_COLOR = "#7cc3cc";
+const DOT_COLOR = "#7acaeb";
 // Dot color inside whichever region is currently highlighted. The dots
 // in that region fade from DOT_COLOR to this (and grow slightly, see
 // DOT_HIGHLIGHT_GROW); switching regions fades the old one back to
 // DOT_COLOR at the same time. The skin itself is never tinted.
-const HIGHLIGHT_COLOR = "#22b585";
+const HIGHLIGHT_COLOR = "#f29450";
 
 // Distance between neighboring dots (rows and columns), in the GLB's own
 // unscaled units -- the female model is ~4.43 units tall, so 0.018 is
@@ -110,7 +123,8 @@ const HIGHLIGHT_COLOR = "#22b585";
 const DOT_SPACING = 0.018;
 // Dot radius as a fraction of DOT_SPACING (0.5 = neighbors touch), for
 // fully lit skin (MIN) and for skin in shadow / inside crevices (MAX).
-// Halftone: the darker a spot is lit, the bigger its dot.
+// Halftone: the darker a spot is lit, the bigger its dot. Dots always
+// face the screen, so this is their on-screen size wherever they sit.
 const DOT_MIN_RADIUS = 0.17;
 const DOT_MAX_RADIUS = 0.36;
 // Dot opacity for fully lit (MIN) and fully shadowed (MAX) skin.
@@ -119,21 +133,23 @@ const DOT_MAX_OPACITY = 1;
 // Which lit brightness counts as "in shadow" (at or below DOT_LIGHT_DARK:
 // MAX radius/opacity) and "fully lit" (at or above DOT_LIGHT_BRIGHT: MIN
 // radius/opacity), smoothly in between. Brightness is the luminance of
-// the skin's final lit color (all lights + crevice darkening), before
-// tone mapping. Raise both to make dots bigger overall, lower both for
-// smaller; pull them apart for a gentler size range.
+// the diffuse light a white surface would get there (all lights, times
+// the crevice darkening). Raise both to make dots bigger overall, lower
+// both for smaller; pull them apart for a gentler size range.
 const DOT_LIGHT_DARK = 0.25;
 const DOT_LIGHT_BRIGHT = 1.15;
 // Inside the highlighted region, dots grow by this factor and are at
 // least this opaque.
-const DOT_HIGHLIGHT_GROW = 1.25;
-const DOT_HIGHLIGHT_OPACITY = 0.95;
-// The grid is projected onto the body from the front/back, the sides and
-// above/below -- whichever the skin faces most -- with rows always
-// horizontal. Where the skin turns from facing one way to another (e.g.
-// the side of the torso, the top of the chest) each grid's dots shrink
-// away toward the switch; higher = narrower band of shrunken dots.
-const DOT_PROJECTION_SHARPNESS = 8;
+const DOT_HIGHLIGHT_GROW = 1;
+const DOT_HIGHLIGHT_OPACITY = 0.75;
+// How far behind the body's visible surface (as a fraction of
+// DOT_SPACING) a dot may sit and still show. Dots sit ON the surface, so
+// this only absorbs depth precision; dots hidden behind another part of
+// the body (an arm across the chest) are far beyond it.
+const DOT_OCCLUSION_TOLERANCE = 1.5;
+// Fade-in speed once the dots have been placed on load, same
+// exponential-decay idiom as HIGHLIGHT_FADE_SPEED.
+const DOT_REVEAL_SPEED = 3;
 
 // How far (in the model's own unscaled local units -- the same space
 // MAN_MESH_SCALE is later applied to) a highlighted region's color bleeds
@@ -157,7 +173,7 @@ const HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
   femaleheart: 0.2,
   femalekidney: 0.2,
   femaleliver: 0.15,
-  femalebrain: 0.25,
+  femalebrainfinal: 0.25,
   femalelungs: 0.15,
 
 };
@@ -323,19 +339,28 @@ function getRegionName(mesh: Mesh): string {
 }
 
 function collectMeshVertexData(scene: Group): MeshVertexData[] {
-  const result: MeshVertexData[] = [];
+  const meshes: Mesh[] = [];
   scene.traverse((obj) => {
     const mesh = obj as Mesh;
-    if (!mesh.isMesh) return;
-    const posAttr = mesh.geometry?.attributes?.position;
-    if (!posAttr) return;
-    result.push({
-      mesh,
-      positions: new Float32Array(posAttr.array as ArrayLike<number>),
-      regionName: getRegionName(mesh),
-    });
+    if (!mesh.isMesh || mesh.userData.isDotCloud) return;
+    if (mesh.geometry?.attributes?.position) meshes.push(mesh);
   });
-  return result;
+  // Positions go into the body's geometry space (see meshToReferenceMatrix)
+  // so a cap parented to the head sits next to the head's vertices, not
+  // at its own local origin.
+  scene.updateWorldMatrix(true, true);
+  const reference = meshes.find((mesh) => (mesh as SkinnedMesh).isSkinnedMesh) ?? meshes[0];
+  const toReference = new Matrix4();
+  const v = new Vector3();
+  return meshes.map((mesh) => {
+    const posAttr = mesh.geometry.attributes.position;
+    const positions = new Float32Array(posAttr.count * 3);
+    meshToReferenceMatrix(mesh, reference, toReference);
+    for (let i = 0; i < posAttr.count; i++) {
+      v.fromBufferAttribute(posAttr, i).applyMatrix4(toReference).toArray(positions, i * 3);
+    }
+    return { mesh, positions, regionName: getRegionName(mesh) };
+  });
 }
 
 /**
@@ -517,37 +542,104 @@ const AO_FADE_SPEED = 3;
 const AO_BAKE_BUDGET_MS = 8;
 
 /**
- * Generator so the caller can run it a slice at a time (it yields every
- * few dozen vertices). Returns a Map from mesh.uuid to one 0..1 openness
- * value per vertex, in that mesh's own vertex order -- same shape as the
- * highlight fields, so it drops straight into a BufferAttribute.
+ * The body's own (source) meshes: every mesh in the GLB scene, but never
+ * the dot clouds PosableModel adds next to them.
  */
-function* bakeVertexOcclusion(
-  scene: Group
-): Generator<void, Map<string, Float32Array>, void> {
-  scene.updateMatrixWorld(true);
-
+function collectBodyMeshes(scene: Group): Mesh[] {
   const meshes: Mesh[] = [];
   scene.traverse((obj) => {
     const mesh = obj as Mesh;
-    if (!mesh.isMesh) return;
+    if (!mesh.isMesh || mesh.userData.isDotCloud) return;
     const { position, normal } = mesh.geometry.attributes;
     if (position && normal) meshes.push(mesh);
   });
-  if (meshes.length === 0) return new Map();
+  return meshes;
+}
 
-  // Merge every submesh (material slot) into one triangle soup, so a ray
-  // from the body can be blocked by any slot -- e.g. a nostril vertex in
-  // "Scene_-_Root" by the "femalebrain" faces.
-  //
-  // The shared space is the FIRST mesh's own geometry space, NOT the
-  // scene's: the body is skinned under an "Armature" node scaled ~0.026,
-  // which the bones cancel out at render time -- so in scene space the
-  // bind-pose geometry is ~38x too small and every AO_* distance below
-  // would be off by that much (rays started outside the nostrils and
-  // never registered them). In geometry space the body is ~4.43 units
-  // tall, which is what AO_RAY_DISTANCE / AO_RAY_BIAS are tuned against.
-  const referenceInverse = new Matrix4().copy(meshes[0].matrixWorld).invert();
+/**
+ * Every body mesh merged into one triangle soup with a BVH over it, in
+ * one shared space -- used both to bake the crevice darkening and to
+ * place the dots, so a ray can hit (or be blocked by) any material slot.
+ *
+ * The shared space is the FIRST mesh's own geometry space, NOT the
+ * scene's: the body is skinned under an "Armature" node scaled ~0.026,
+ * which the bones cancel out at render time -- so in scene space the
+ * bind-pose geometry is ~38x too small and every AO_* / DOT_* distance
+ * would be off by that much. In geometry space the body is ~4.43 units
+ * tall (y up, facing +z), which is what those constants are tuned against.
+ */
+interface MergedSurface {
+  meshes: Mesh[];
+  // Where each mesh's vertices start in the merged arrays.
+  vertOffsets: number[];
+  // Index into `meshes` for every merged vertex.
+  vertexMesh: Uint16Array;
+  // Reference space -> each mesh's own geometry space, as a uniform
+  // scale factor (distances only).
+  referenceToMeshScale: number[];
+  positions: Float32Array;
+  normals: Float32Array;
+  index: Uint32Array;
+  vertTotal: number;
+  indexTotal: number;
+  geometry: BufferGeometry;
+  bvh: MeshBVH;
+}
+
+/**
+ * Where a skinned mesh's geometry is drawn when moved by bone `boneIndex`
+ * alone (geometry -> world). A skinned mesh is placed by its bones, not
+ * its node transform -- the bind matrices cancel that out (here: the
+ * Armature's 0.026 scale) -- so this, not matrixWorld, is its real space.
+ */
+function boneSkinningMatrix(mesh: SkinnedMesh, boneIndex: number, target: Matrix4): Matrix4 {
+  return target
+    .copy(mesh.matrixWorld)
+    .multiply(mesh.bindMatrixInverse)
+    .multiply(mesh.skeleton.bones[boneIndex].matrixWorld)
+    .multiply(mesh.skeleton.boneInverses[boneIndex])
+    .multiply(mesh.bindMatrix);
+}
+
+/**
+ * Maps `mesh`'s own geometry into `reference`'s geometry space (its
+ * bind-pose shape), whatever pose the skeleton is in right now:
+ * - another skinned mesh: through their shared skinning;
+ * - a plain mesh hanging off one of the bones (e.g. a cap parented to the
+ *   head): through THAT bone's skinning, so it lands on the skin it rides
+ *   with even if a pose has already started blending in;
+ * - anything else: through the root bone's skinning.
+ */
+function meshToReferenceMatrix(mesh: Mesh, reference: Mesh, target: Matrix4): Matrix4 {
+  const ref = reference as SkinnedMesh;
+  if (!ref.isSkinnedMesh || !ref.skeleton) {
+    return target.copy(reference.matrixWorld).invert().multiply(mesh.matrixWorld);
+  }
+  const skinning = new Matrix4();
+  const skinned = mesh as SkinnedMesh;
+  if (skinned.isSkinnedMesh && skinned.skeleton) {
+    boneSkinningMatrix(ref, 0, target).invert();
+    return target.multiply(boneSkinningMatrix(skinned, 0, skinning));
+  }
+  let boneIndex = 0;
+  for (let p = mesh.parent; p; p = p.parent) {
+    const index = ref.skeleton.bones.indexOf(p as Bone);
+    if (index >= 0) {
+      boneIndex = index;
+      break;
+    }
+  }
+  return boneSkinningMatrix(ref, boneIndex, target).invert().multiply(mesh.matrixWorld);
+}
+
+function buildMergedSurface(meshes: Mesh[]): MergedSurface {
+  for (const mesh of meshes) mesh.updateWorldMatrix(true, false);
+  for (const mesh of meshes) {
+    (mesh as SkinnedMesh).skeleton?.bones.forEach((bone) => bone.updateWorldMatrix(true, false));
+  }
+  // The body (first skinned mesh) defines the shared space -- caps or
+  // props parented to its bones can come first in the scene traversal.
+  const reference = meshes.find((mesh) => (mesh as SkinnedMesh).isSkinnedMesh) ?? meshes[0];
   let vertTotal = 0;
   let indexTotal = 0;
   for (const mesh of meshes) {
@@ -558,20 +650,28 @@ function* bakeVertexOcclusion(
   const positions = new Float32Array(vertTotal * 3);
   const normals = new Float32Array(vertTotal * 3);
   const index = new Uint32Array(indexTotal);
+  const vertexMesh = new Uint16Array(vertTotal);
+  const vertOffsets: number[] = [];
+  const referenceToMeshScale: number[] = [];
   const toReference = new Matrix4();
   const normalMatrix = new Matrix3();
+  const scale = new Vector3();
   const v = new Vector3();
   let vertOffset = 0;
   let indexOffset = 0;
-  for (const mesh of meshes) {
+  meshes.forEach((mesh, meshIndex) => {
     const { position, normal } = mesh.geometry.attributes;
-    toReference.multiplyMatrices(referenceInverse, mesh.matrixWorld);
+    meshToReferenceMatrix(mesh, reference, toReference);
     normalMatrix.getNormalMatrix(toReference);
+    scale.setFromMatrixScale(toReference);
+    referenceToMeshScale.push(3 / (scale.x + scale.y + scale.z));
+    vertOffsets.push(vertOffset);
     for (let i = 0; i < position.count; i++) {
       v.fromBufferAttribute(position, i).applyMatrix4(toReference);
       v.toArray(positions, (vertOffset + i) * 3);
       v.fromBufferAttribute(normal, i).applyMatrix3(normalMatrix).normalize();
       v.toArray(normals, (vertOffset + i) * 3);
+      vertexMesh[vertOffset + i] = meshIndex;
     }
     const srcIndex = mesh.geometry.index;
     const count = srcIndex?.count ?? position.count;
@@ -580,13 +680,39 @@ function* bakeVertexOcclusion(
     }
     vertOffset += position.count;
     indexOffset += count;
-  }
+  });
 
-  const merged = new BufferGeometry();
-  merged.setAttribute("position", new BufferAttribute(positions, 3));
-  merged.setIndex(new BufferAttribute(index, 1));
-  const bvh = new MeshBVH(merged);
-  yield;
+  const geometry = new BufferGeometry();
+  geometry.setAttribute("position", new BufferAttribute(positions, 3));
+  // MeshBVH reorders this index's triangles in place -- fine, since every
+  // user only needs "which triangles exist", never their original order.
+  geometry.setIndex(new BufferAttribute(index, 1));
+  const bvh = new MeshBVH(geometry);
+  return {
+    meshes,
+    vertOffsets,
+    vertexMesh,
+    referenceToMeshScale,
+    positions,
+    normals,
+    index,
+    vertTotal,
+    indexTotal,
+    geometry,
+    bvh,
+  };
+}
+
+/**
+ * Generator so the caller can run it a slice at a time (it yields every
+ * few dozen vertices). Returns a Map from mesh.uuid to one 0..1 openness
+ * value per vertex, in that mesh's own vertex order -- same shape as the
+ * highlight fields.
+ */
+function* bakeVertexOcclusion(
+  surface: MergedSurface
+): Generator<void, Map<string, Float32Array>, void> {
+  const { meshes, positions, normals, index, vertTotal, indexTotal, bvh } = surface;
 
   // Cosine-weighted directions over the +Z hemisphere (golden-angle
   // spiral), so every hit counts equally and grazing rays matter least --
@@ -645,7 +771,6 @@ function* bakeVertexOcclusion(
 
     if ((i & 31) === 31) yield;
   }
-  merged.dispose();
 
   // One smoothing pass over the triangle mesh to wash out sampling noise,
   // done on welded vertices (same quantized position = same vertex) so
@@ -703,8 +828,359 @@ function* bakeVertexOcclusion(
   return result;
 }
 
-// Uniforms shared by every mesh's dot material, so changing a value once
-// (e.g. easing uBlend in useFrame) updates the whole body at once.
+// ---------------------------------------------------------------------
+// Dot cloud. The body itself is never drawn in color. Instead, thousands
+// of points are pinned to its skin (placed once, on a regular grid, see
+// placeSurfaceDots), and each point is drawn as a flat round dot that
+// always faces the screen -- never tilted with the skin -- sized by how
+// brightly that spot is lit. Dots at the silhouette simply overhang it.
+// ---------------------------------------------------------------------
+
+// For each projection axis (X = sides, Y = top/bottom, Z = front/back):
+// the two axes its grid runs along, rows (second) always being the
+// vertical one where possible.
+const DOT_GRID_AXES: [number, number][] = [
+  [2, 1],
+  [0, 2],
+  [0, 1],
+];
+
+// Sealed-cavity culling. Patching a hole (mouth, nostrils, eyes) with a
+// cap mesh leaves the old inner surfaces behind it, and the grid rays
+// would dot those too -- they then show through the cap, since they sit
+// within the occlusion tolerance behind it. So every candidate dot first
+// checks it can see out of the body: rays fan out over the side its
+// normal faces, then the other side (in case a normal is flipped), and the
+// dot is kept once DOT_ESCAPE_RAYS_NEEDED of them leave the model without
+// hitting anything. Open skin passes on its first rays; only dots sealed
+// inside a cavity hit on every ray and are dropped.
+const DOT_ESCAPE_RAY_COUNT = 16; // per side
+// Needing more than one escape keeps a hairline gap between a cap and the
+// skin from rescuing the cavity behind it.
+const DOT_ESCAPE_RAYS_NEEDED = 2;
+
+// Uniform directions over the +Z hemisphere, the most upright first, so
+// open skin escapes on the first couple of tries.
+const DOT_ESCAPE_SAMPLES: Vector3Tuple[] = (() => {
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const samples: Vector3Tuple[] = [];
+  for (let s = 0; s < DOT_ESCAPE_RAY_COUNT; s++) {
+    const z = 1 - (s + 0.5) / DOT_ESCAPE_RAY_COUNT;
+    const r = Math.sqrt(1 - z * z);
+    samples.push([r * Math.cos(s * goldenAngle), r * Math.sin(s * goldenAngle), z]);
+  }
+  return samples;
+})();
+
+/**
+ * Can the surface point p (normal n, unit length) see out of the model?
+ * Returns how many rays it took (negative when it can't), so the caller
+ * can account for the work when time-slicing.
+ */
+function surfaceEscapes(
+  bvh: MeshBVH,
+  ray: Ray,
+  px: number,
+  py: number,
+  pz: number,
+  nx0: number,
+  ny0: number,
+  nz0: number
+): number {
+  let escaped = 0;
+  let fired = 0;
+  for (const side of [1, -1]) {
+    const nx = nx0 * side;
+    const ny = ny0 * side;
+    const nz = nz0 * side;
+    // Tangent frame around n, as in bakeVertexOcclusion.
+    const sign = nz >= 0 ? 1 : -1;
+    const a = -1 / (sign + nz);
+    const b = nx * ny * a;
+    const tx = 1 + sign * nx * nx * a, ty = sign * b, tz = -sign * nx;
+    const bx = b, by = sign + ny * ny * a, bz = -ny;
+    for (const [sx, sy, sz] of DOT_ESCAPE_SAMPLES) {
+      ray.origin.set(px + nx * AO_RAY_BIAS, py + ny * AO_RAY_BIAS, pz + nz * AO_RAY_BIAS);
+      ray.direction.set(
+        tx * sx + bx * sy + nx * sz,
+        ty * sx + by * sy + ny * sz,
+        tz * sx + bz * sy + nz * sz
+      );
+      fired++;
+      if (!bvh.raycastFirst(ray, DoubleSide) && ++escaped >= DOT_ESCAPE_RAYS_NEEDED) {
+        return fired;
+      }
+    }
+  }
+  return -fired;
+}
+
+/** The dots pinned to one body mesh, all in that mesh's own geometry space. */
+interface DotCloudData {
+  source: Mesh;
+  count: number;
+  // Rest-pose position (3 per dot) and normal (3 per dot) on the skin.
+  anchors: Float32Array;
+  normals: Float32Array;
+  // Up to 4 bones per dot (4 per dot), blended from the 3 vertices of the
+  // triangle the dot sits on -- so it moves exactly with the skin there.
+  skinIndex: Float32Array | null;
+  skinWeight: Float32Array | null;
+  // The 3 source vertices of each dot's triangle (3 per dot) and the
+  // dot's barycentric weights on it (3 per dot), to carry any per-vertex
+  // value (highlight fields, crevice darkening) over to the dots.
+  corners: Uint32Array;
+  bary: Float32Array;
+  // Multiplies DOT_SPACING (reference-space units) into this mesh's own
+  // geometry units.
+  referenceToMeshScale: number;
+}
+
+/**
+ * Pins dots to the skin on a regular grid: rays are cast straight through
+ * the body along each axis, one per grid cell (DOT_SPACING apart), and
+ * every surface a ray crosses gets a dot -- but only if that surface faces
+ * the ray's axis more than the other two, so each patch of skin is dotted
+ * by exactly one grid. Front/back and sides give horizontal rows.
+ *
+ * Generator so the caller can run it a slice at a time.
+ */
+function* placeSurfaceDots(
+  surface: MergedSurface
+): Generator<void, DotCloudData[], void> {
+  const { meshes, positions, normals, vertexMesh, vertOffsets, vertTotal, bvh } =
+    surface;
+
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < vertTotal; i++) {
+    for (let k = 0; k < 3; k++) {
+      const value = positions[i * 3 + k];
+      if (value < min[k]) min[k] = value;
+      if (value > max[k]) max[k] = value;
+    }
+  }
+
+  const corners: number[][] = meshes.map(() => []);
+  const barys: number[][] = meshes.map(() => []);
+  const ray = new Ray();
+  const triangle = new Triangle();
+  const va = new Vector3();
+  const vb = new Vector3();
+  const vc = new Vector3();
+  const bary = new Vector3();
+  const origin = [0, 0, 0];
+  const direction = [0, 0, 0];
+  const escapeRay = new Ray();
+  let work = 0;
+
+  for (let axis = 0; axis < 3; axis++) {
+    const [u, w] = DOT_GRID_AXES[axis];
+    const uFirst = Math.floor(min[u] / DOT_SPACING);
+    const uLast = Math.ceil(max[u] / DOT_SPACING);
+    const wFirst = Math.floor(min[w] / DOT_SPACING);
+    const wLast = Math.ceil(max[w] / DOT_SPACING);
+    direction[0] = direction[1] = direction[2] = 0;
+    direction[axis] = -1;
+    ray.direction.fromArray(direction);
+
+    for (let iu = uFirst; iu <= uLast; iu++) {
+      for (let iw = wFirst; iw <= wLast; iw++) {
+        origin[axis] = max[axis] + DOT_SPACING;
+        origin[u] = (iu + 0.5) * DOT_SPACING;
+        origin[w] = (iw + 0.5) * DOT_SPACING;
+        ray.origin.fromArray(origin);
+
+        const hits = bvh.raycast(ray, DoubleSide);
+        hits.sort((p, q) => p.distance - q.distance);
+        let lastDistance = -Infinity;
+        for (const hit of hits) {
+          // A ray through a shared edge reports both triangles -- one dot.
+          if (hit.distance - lastDistance < 1e-6) continue;
+          lastDistance = hit.distance;
+          const face = hit.face;
+          if (!face) continue;
+
+          va.fromArray(positions, face.a * 3);
+          vb.fromArray(positions, face.b * 3);
+          vc.fromArray(positions, face.c * 3);
+          if (!triangle.set(va, vb, vc).getBarycoord(hit.point, bary)) continue;
+          // Snap tiny numerical overshoots back onto the triangle.
+          bary.set(Math.max(bary.x, 0), Math.max(bary.y, 0), Math.max(bary.z, 0));
+          const barySum = bary.x + bary.y + bary.z;
+          if (barySum <= 0) continue;
+          bary.divideScalar(barySum);
+
+          // Does this spot face this grid's axis more than the others?
+          let facing = 0;
+          let other = 0;
+          for (let k = 0; k < 3; k++) {
+            const n = Math.abs(
+              normals[face.a * 3 + k] * bary.x +
+                normals[face.b * 3 + k] * bary.y +
+                normals[face.c * 3 + k] * bary.z
+            );
+            if (k === axis) facing = n;
+            else other = Math.max(other, n);
+          }
+          if (facing < other) continue;
+
+          // Skip surfaces sealed inside the body (see surfaceEscapes).
+          let nx = 0, ny = 0, nz = 0;
+          for (let k = 0; k < 3; k++) {
+            const n =
+              normals[face.a * 3 + k] * bary.x +
+              normals[face.b * 3 + k] * bary.y +
+              normals[face.c * 3 + k] * bary.z;
+            if (k === 0) nx = n;
+            else if (k === 1) ny = n;
+            else nz = n;
+          }
+          const nLength = Math.hypot(nx, ny, nz);
+          if (nLength < 1e-8) continue;
+          const escapeRays = surfaceEscapes(
+            bvh,
+            escapeRay,
+            hit.point.x,
+            hit.point.y,
+            hit.point.z,
+            nx / nLength,
+            ny / nLength,
+            nz / nLength
+          );
+          work += Math.abs(escapeRays);
+          if (escapeRays < 0) continue;
+
+          const meshIndex = vertexMesh[face.a];
+          const offset = vertOffsets[meshIndex];
+          corners[meshIndex].push(face.a - offset, face.b - offset, face.c - offset);
+          barys[meshIndex].push(bary.x, bary.y, bary.z);
+        }
+
+        // Yield every ~128 grid rays' worth of raycasts (escape tests
+        // included -- sealed dots cost a full fan of rays each).
+        work += 1;
+        if (work >= 128) {
+          work = 0;
+          yield;
+        }
+      }
+    }
+  }
+
+  return meshes.map((mesh, meshIndex) =>
+    buildDotCloudData(
+      mesh,
+      new Uint32Array(corners[meshIndex]),
+      new Float32Array(barys[meshIndex]),
+      surface.referenceToMeshScale[meshIndex]
+    )
+  );
+}
+
+function buildDotCloudData(
+  source: Mesh,
+  corners: Uint32Array,
+  bary: Float32Array,
+  referenceToMeshScale: number
+): DotCloudData {
+  const count = bary.length / 3;
+  const { position, normal } = source.geometry.attributes;
+  const sourceSkinIndex = source.geometry.getAttribute("skinIndex");
+  const sourceSkinWeight = source.geometry.getAttribute("skinWeight");
+  const skinned = !!sourceSkinIndex && !!sourceSkinWeight;
+
+  const anchors = new Float32Array(count * 3);
+  const normals = new Float32Array(count * 3);
+  const skinIndex = skinned ? new Float32Array(count * 4) : null;
+  const skinWeight = skinned ? new Float32Array(count * 4) : null;
+  const n = new Vector3();
+  // Up to 3 vertices x 4 bones each.
+  const bones = new Float32Array(12);
+  const weights = new Float32Array(12);
+
+  for (let d = 0; d < count; d++) {
+    let px = 0, py = 0, pz = 0;
+    n.set(0, 0, 0);
+    let influences = 0;
+    for (let k = 0; k < 3; k++) {
+      const vertex = corners[d * 3 + k];
+      const b = bary[d * 3 + k];
+      px += position.getX(vertex) * b;
+      py += position.getY(vertex) * b;
+      pz += position.getZ(vertex) * b;
+      n.x += normal.getX(vertex) * b;
+      n.y += normal.getY(vertex) * b;
+      n.z += normal.getZ(vertex) * b;
+
+      if (!skinned) continue;
+      for (let j = 0; j < 4; j++) {
+        const weight = sourceSkinWeight.getComponent(vertex, j) * b;
+        if (weight <= 0) continue;
+        const bone = sourceSkinIndex.getComponent(vertex, j);
+        let slot = 0;
+        while (slot < influences && bones[slot] !== bone) slot++;
+        if (slot === influences) {
+          bones[slot] = bone;
+          weights[slot] = 0;
+          influences++;
+        }
+        weights[slot] += weight;
+      }
+    }
+    anchors[d * 3] = px;
+    anchors[d * 3 + 1] = py;
+    anchors[d * 3 + 2] = pz;
+    n.normalize();
+    n.toArray(normals, d * 3);
+
+    if (skinIndex && skinWeight) {
+      // Keep the 4 strongest bones, renormalized to sum to 1.
+      let total = 0;
+      for (let j = 0; j < 4; j++) {
+        let best = -1;
+        for (let s = 0; s < influences; s++) {
+          if (weights[s] > 0 && (best < 0 || weights[s] > weights[best])) best = s;
+        }
+        if (best < 0) break;
+        skinIndex[d * 4 + j] = bones[best];
+        skinWeight[d * 4 + j] = weights[best];
+        total += weights[best];
+        weights[best] = 0;
+      }
+      if (total > 0) {
+        for (let j = 0; j < 4; j++) skinWeight[d * 4 + j] /= total;
+      }
+    }
+  }
+
+  return {
+    source,
+    count,
+    anchors,
+    normals,
+    skinIndex,
+    skinWeight,
+    corners,
+    bary,
+    referenceToMeshScale,
+  };
+}
+
+/** Carries one per-vertex value over to every dot (barycentric blend). */
+function interpolateToDots(values: Float32Array, data: DotCloudData): Float32Array {
+  const result = new Float32Array(data.count);
+  for (let d = 0; d < data.count; d++) {
+    result[d] =
+      values[data.corners[d * 3]] * data.bary[d * 3] +
+      values[data.corners[d * 3 + 1]] * data.bary[d * 3 + 1] +
+      values[data.corners[d * 3 + 2]] * data.bary[d * 3 + 2];
+  }
+  return result;
+}
+
+// Uniforms shared by every dot cloud's material, so changing a value once
+// (e.g. easing uBlend in useFrame) updates every dot at once.
 interface DotUniforms {
   [name: string]: { value: unknown };
   uBlend: { value: number };
@@ -722,7 +1198,12 @@ interface DotUniforms {
   uDotLightBright: { value: number };
   uDotHighlightGrow: { value: number };
   uDotHighlightOpacity: { value: number };
-  uDotProjectionSharpness: { value: number };
+  uDotOcclusionTolerance: { value: number };
+  uReveal: { value: number };
+  uBodyDepth: { value: Texture | null };
+  uResolution: { value: Vector2 };
+  uCameraNear: { value: number };
+  uCameraFar: { value: number };
 }
 
 function createDotUniforms(): DotUniforms {
@@ -744,214 +1225,292 @@ function createDotUniforms(): DotUniforms {
     uDotLightBright: { value: DOT_LIGHT_BRIGHT },
     uDotHighlightGrow: { value: DOT_HIGHLIGHT_GROW },
     uDotHighlightOpacity: { value: DOT_HIGHLIGHT_OPACITY },
-    uDotProjectionSharpness: { value: DOT_PROJECTION_SHARPNESS },
+    uDotOcclusionTolerance: { value: DOT_OCCLUSION_TOLERANCE },
+    // 0 -> 1 fade-in once the dots have been placed.
+    uReveal: { value: 0 },
+    // Filled in every frame by PosableModel's render pass.
+    uBodyDepth: { value: null },
+    uResolution: { value: new Vector2(1, 1) },
+    uCameraNear: { value: 0.1 },
+    uCameraFar: { value: 1000 },
   };
 }
 
 /**
- * The invisible half of the dotted look. Drawn first (it's opaque, the
- * dots are transparent, and three always draws opaque before
- * transparent), it writes the body's depth but no color -- so the page
- * background stays visible, yet anything behind the body's front surface
- * (the back of the torso, the far arm, dots on the other side) fails the
- * depth test and is hidden. That's what stops the dots looking x-rayed.
- *
- * The polygon offset pushes its depth a hair further away, so the dots --
- * drawn on the exact same triangles by a different shader program, which
- * the GPU isn't required to rasterize to bit-identical depth -- always
- * pass the depth test on top of it instead of flickering in and out.
+ * The body's own material: invisible. It writes depth but no color, so
+ * the page background shows through it. PosableModel renders the body
+ * with it into a depth texture every frame, which each dot checks to know
+ * whether the body hides it (the back of the torso, the far arm) -- that's
+ * what stops the dots looking x-rayed.
  */
 function createOccluderMaterial(regionName: string): MeshBasicMaterial {
   const material = new MeshBasicMaterial({
     colorWrite: false,
-    polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 2,
+    // Never shown, so skip fog / tone mapping (they'd otherwise make three
+    // swap shader programs between the depth pass and the screen pass).
+    fog: false,
+    toneMapped: false,
   });
   material.name = `${regionName}-occluder`;
   material.userData.dotLook = true;
   return material;
 }
 
-/**
- * The visible half of the dotted look: a MeshStandardMaterial patched
- * (via onBeforeCompile, the standard three.js hook) to throw away every
- * pixel that isn't inside a dot.
- *
- * - The dot grid is laid out in the mesh's REST-POSE geometry (the raw
- *   `position` attribute, before skinning), not on screen or in world
- *   space -- so the dots are printed on the skin like a tattoo and move,
- *   bend and stretch with it in every pose instead of sliding over it.
- *   `dotSpace` maps this mesh's geometry into one shared reference space
- *   (the first mesh's), so the grid lines up across material-slot seams.
- * - The grid is projected from whichever axis the skin faces most (see
- *   DOT_PROJECTION_SHARPNESS), with rows always horizontal.
- * - The full lighting (every light, shadows, and the baked crevice
- *   darkening, see bakeVertexOcclusion) is still computed, but only used
- *   to size the dots: the darker the spot, the bigger and more opaque
- *   its dot. The dots themselves are flat DOT_COLOR.
- * - Inside the highlighted region (per-vertex weight, the mix of
- *   aHighlightFrom/aHighlightTo driven by uBlend) the dots fade to
- *   HIGHLIGHT_COLOR and grow a little.
- * - Dot edges are anti-aliased from screen-space derivatives, and dots
- *   squashed too small to draw cleanly (skin turning edge-on to the
- *   camera) fade out instead of shimmering (moire).
- */
-function createDotMaterial(
-  regionName: string,
+// Each dot is one screen-facing quad (4 corners of aCorner, -1..1),
+// instanced once per dot. All the per-dot data -- anchor (position),
+// normal, bones, crevice darkening, highlight weights -- is per instance.
+const DOT_VERTEX_SHADER = /* glsl */ `
+  #include <common>
+  #include <packing>
+  #include <lights_pars_begin>
+  #include <skinning_pars_vertex>
+
+  attribute vec2 aCorner;
+  attribute float aOcclusion;
+  attribute float aHighlightFrom;
+  attribute float aHighlightTo;
+
+  uniform float uBlend;
+  uniform float uAOStrength;
+  uniform float uAODarkBelow;
+  uniform float uAOLightAbove;
+  uniform vec3 uDotColor;
+  uniform vec3 uHighlightColor;
+  uniform float uDotSpacing;
+  uniform float uReferenceToMeshScale;
+  uniform float uDotMinRadius;
+  uniform float uDotMaxRadius;
+  uniform float uDotMinOpacity;
+  uniform float uDotMaxOpacity;
+  uniform float uDotLightDark;
+  uniform float uDotLightBright;
+  uniform float uDotHighlightGrow;
+  uniform float uDotHighlightOpacity;
+  uniform float uDotOcclusionTolerance;
+  uniform float uReveal;
+  uniform sampler2D uBodyDepth;
+  uniform vec2 uResolution;
+  uniform float uCameraNear;
+  uniform float uCameraFar;
+
+  varying vec2 vCorner;
+  varying float vRadiusPx;
+  varying float vQuadPx;
+  varying float vAlpha;
+  varying vec3 vColor;
+
+  void main() {
+    vCorner = aCorner;
+    vRadiusPx = 0.0;
+    vQuadPx = 1.0;
+    vAlpha = 0.0;
+    vColor = uDotColor;
+
+    // Skin the dot's anchor and normal exactly like the body's own
+    // vertices, so it stays pinned to the same spot in every pose.
+    #include <skinbase_vertex>
+    #include <beginnormal_vertex>
+    #include <skinnormal_vertex>
+    #include <defaultnormal_vertex>
+    #include <begin_vertex>
+    #include <skinning_vertex>
+
+    vec4 anchor = modelViewMatrix * vec4( transformed, 1.0 );
+    vec3 viewNormal = normalize( transformedNormal );
+
+    // Size of one geometry unit in view space (bones and the model's
+    // scale included), to turn DOT_SPACING into on-screen size.
+    mat3 toView = mat3( modelViewMatrix );
+    #ifdef USE_SKINNING
+      toView = toView * mat3( skinMatrix );
+    #endif
+    float viewPerUnit = ( length( toView[ 0 ] ) + length( toView[ 1 ] ) + length( toView[ 2 ] ) ) / 3.0;
+    float spacingView = uDotSpacing * uReferenceToMeshScale * viewPerUnit;
+
+    // How brightly this spot of skin is lit: the same lights the scene
+    // has (hemisphere + every directional light), diffuse only, times
+    // the baked crevice darkening.
+    vec3 irradiance = getAmbientLightIrradiance( ambientLightColor );
+    #if NUM_HEMI_LIGHTS > 0
+      #pragma unroll_loop_start
+      for ( int i = 0; i < NUM_HEMI_LIGHTS; i ++ ) {
+        irradiance += getHemisphereLightIrradiance( hemisphereLights[ i ], viewNormal );
+      }
+      #pragma unroll_loop_end
+    #endif
+    #if NUM_DIR_LIGHTS > 0
+      IncidentLight directLight;
+      #pragma unroll_loop_start
+      for ( int i = 0; i < NUM_DIR_LIGHTS; i ++ ) {
+        getDirectionalLightInfo( directionalLights[ i ], directLight );
+        irradiance += saturate( dot( viewNormal, directLight.direction ) ) * directLight.color;
+      }
+      #pragma unroll_loop_end
+    #endif
+    float creviceOpen = smoothstep( uAODarkBelow, uAOLightAbove, aOcclusion );
+    float lightLevel = dot( irradiance * RECIPROCAL_PI, vec3( 0.2126, 0.7152, 0.0722 ) );
+    lightLevel *= mix( 1.0, creviceOpen, clamp( uAOStrength, 0.0, 1.0 ) );
+
+    // 1 = in shadow (biggest, strongest dot), 0 = fully lit (smallest).
+    float shade = 1.0 - smoothstep( uDotLightDark, uDotLightBright, lightLevel );
+    float highlight = clamp( mix( aHighlightFrom, aHighlightTo, uBlend ), 0.0, 1.0 );
+    float radius = mix( uDotMinRadius, uDotMaxRadius, shade );
+    radius = max( radius * mix( 1.0, uDotHighlightGrow, highlight ), 0.0 );
+    float opacity = mix( uDotMinOpacity, uDotMaxOpacity, shade );
+    opacity = clamp( mix( opacity, max( opacity, uDotHighlightOpacity ), highlight ), 0.0, 1.0 );
+
+    // Dots on skin facing away from the camera are on the far side of
+    // the body -- hide them (softly, so nothing pops at the silhouette).
+    float facing = dot( viewNormal, normalize( -anchor.xyz ) );
+    float frontFacing = smoothstep( -0.15, 0.0, facing );
+
+    // Is the body itself in front of this dot (an arm across the chest,
+    // the torso in front of the far arm)? Compare the dot's depth with
+    // the body's depth at the same pixel, from this frame's depth pass.
+    float pxPerView = projectionMatrix[ 1 ][ 1 ] * 0.5 * uResolution.y / max( -anchor.z, 1e-5 );
+    vec4 anchorClip = projectionMatrix * anchor;
+    vec2 anchorUv = anchorClip.xy / anchorClip.w * 0.5 + 0.5;
+    ivec2 texel = ivec2( clamp( floor( anchorUv * uResolution ), vec2( 0.0 ), uResolution - 1.0 ) );
+    float bodyDepth = texelFetch( uBodyDepth, texel, 0 ).r;
+    float bodyViewZ = perspectiveDepthToViewZ( bodyDepth, uCameraNear, uCameraFar );
+    float bodyInFront = bodyViewZ - anchor.z;
+    // The dot sits ON the body's surface, so allow a little slack -- more
+    // where the skin turns edge-on and one pixel spans a lot of depth.
+    float tolerance = uDotOcclusionTolerance * spacingView + 2.0 / ( pxPerView * max( facing, 0.1 ) );
+    float unoccluded = 1.0 - smoothstep( tolerance, 2.0 * tolerance, bodyInFront );
+
+    // On-screen radius in pixels. Dots too small to draw cleanly are drawn
+    // at 0.6px and made fainter instead, so they never flicker.
+    float radiusPx = radius * spacingView * pxPerView;
+    float drawPx = max( radiusPx, 0.6 );
+    float alpha = opacity * frontFacing * unoccluded * clamp( uReveal, 0.0, 1.0 );
+    alpha *= min( 1.0, ( radiusPx * radiusPx ) / ( drawPx * drawPx ) );
+
+    if ( alpha < 0.004 ) {
+      // Hidden: push the quad outside the clip volume so nothing is drawn.
+      gl_Position = vec4( 0.0, 0.0, 2.0, 1.0 );
+      return;
+    }
+
+    // A flat quad facing the screen (offset in view space, parallel to
+    // the image plane), 1px larger than the dot for its anti-aliased edge.
+    float quadPx = drawPx + 1.0;
+    vec4 corner = anchor;
+    corner.xy += aCorner * ( quadPx / pxPerView );
+    gl_Position = projectionMatrix * corner;
+
+    vRadiusPx = drawPx;
+    vQuadPx = quadPx;
+    vAlpha = alpha;
+    vColor = mix( uDotColor, uHighlightColor, highlight );
+  }
+`;
+
+const DOT_FRAGMENT_SHADER = /* glsl */ `
+  #include <common>
+
+  varying vec2 vCorner;
+  varying float vRadiusPx;
+  varying float vQuadPx;
+  varying float vAlpha;
+  varying vec3 vColor;
+
+  void main() {
+    // Distance from the dot's center in pixels -> a perfectly round dot
+    // with a 1px anti-aliased edge.
+    float distPx = length( vCorner ) * vQuadPx;
+    float alpha = clamp( vRadiusPx + 0.5 - distPx, 0.0, 1.0 ) * vAlpha;
+    if ( alpha < 0.004 ) discard;
+    gl_FragColor = vec4( vColor, alpha );
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }
+`;
+
+function createDotCloudMaterial(
   uniforms: DotUniforms,
-  dotSpace: Matrix4
-): MeshStandardMaterial {
-  const material = new MeshStandardMaterial({
-    // Only feeds the lighting that sizes the dots; never shown.
-    color: "#fff",
-    roughness: 0.75,
-    metalness: 0,
+  referenceToMeshScale: number
+): ShaderMaterial {
+  const material = new ShaderMaterial({
+    uniforms: {
+      // Fresh copies of three's light uniforms (filled in by the renderer)
+      // plus the shared dot uniforms, by reference.
+      ...UniformsUtils.clone(UniformsLib.lights),
+      ...uniforms,
+      uReferenceToMeshScale: { value: referenceToMeshScale },
+    },
+    vertexShader: DOT_VERTEX_SHADER,
+    fragmentShader: DOT_FRAGMENT_SHADER,
+    lights: true,
     transparent: true,
-    // The occluder already wrote the body's depth.
+    // The quads are built facing the screen in view space, so they're
+    // never really back-facing -- but three flips the winding test for
+    // mirrored meshes (negative scale, e.g. a cap mirrored across the
+    // face), which would cull every dot on them.
+    side: DoubleSide,
+    // Visibility comes from the body depth texture instead (see the
+    // vertex shader), so a dot is never cut by the skin it sits on and
+    // dots at the silhouette overhang it whole.
+    depthTest: false,
     depthWrite: false,
   });
-  material.name = regionName;
   material.userData.dotLook = true;
-  const dotNormalSpace = new Matrix3().getNormalMatrix(dotSpace);
-
-  material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, uniforms, {
-      uDotSpace: { value: dotSpace },
-      uDotNormalSpace: { value: dotNormalSpace },
-    });
-
-    shader.vertexShader = shader.vertexShader
-      .replace(
-        "#include <common>",
-        `#include <common>
-        attribute float aHighlightFrom;
-        attribute float aHighlightTo;
-        attribute float aOcclusion;
-        uniform float uBlend;
-        uniform mat4 uDotSpace;
-        uniform mat3 uDotNormalSpace;
-        varying float vHighlight;
-        varying float vOcclusion;
-        varying vec3 vDotPos;
-        varying vec3 vDotNormal;`
-      )
-      .replace(
-        "#include <begin_vertex>",
-        `#include <begin_vertex>
-        vHighlight = mix( aHighlightFrom, aHighlightTo, uBlend );
-        vOcclusion = aOcclusion;
-        vDotPos = ( uDotSpace * vec4( position, 1.0 ) ).xyz;
-        vDotNormal = uDotNormalSpace * normal;`
-      );
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        "#include <common>",
-        `#include <common>
-        uniform float uAOStrength;
-        uniform float uAODarkBelow;
-        uniform float uAOLightAbove;
-        uniform vec3 uDotColor;
-        uniform vec3 uHighlightColor;
-        uniform float uDotSpacing;
-        uniform float uDotMinRadius;
-        uniform float uDotMaxRadius;
-        uniform float uDotMinOpacity;
-        uniform float uDotMaxOpacity;
-        uniform float uDotLightDark;
-        uniform float uDotLightBright;
-        uniform float uDotHighlightGrow;
-        uniform float uDotHighlightOpacity;
-        uniform float uDotProjectionSharpness;
-        varying float vHighlight;
-        varying float vOcclusion;
-        varying vec3 vDotPos;
-        varying vec3 vDotNormal;
-
-        // Coverage (0..1) of one projected dot grid at p (the 2 projected
-        // coordinates, in geometry units). normalAB / normalK are the
-        // skin normal's components along those 2 axes / along the
-        // projection axis. radius is a fraction of the spacing.
-        float dotGridCoverage( vec2 p, vec2 normalAB, float normalK, float radius ) {
-          vec2 cell = p / uDotSpacing;
-          // How far one screen pixel moves in cell units, along screen x
-          // and y. Taken from the continuous cell coordinate -- never from
-          // the distance to the dot center, which jumps at every cell
-          // border and would draw faint grid lines between the dots.
-          vec2 cellPerPxX = dFdx( cell );
-          vec2 cellPerPxY = dFdy( cell );
-          // Distance to the dot center measured ON THE SKIN (its tangent
-          // plane), not in the flat projection: a projected grid stretches
-          // dots into dashes wherever the skin slopes away from the
-          // projection axis; adding back the depth the slope implies keeps
-          // every dot round.
-          vec2 slope = normalAB / max( abs( normalK ), 0.2 );
-          vec2 offset = fract( cell ) - 0.5;
-          vec3 onSkin = vec3( offset, dot( slope, offset ) );
-          float dist = length( onSkin );
-          // Exact width of one pixel across this dot's edge, in the same
-          // units -- also right for dots squashed into ellipses where the
-          // skin turns away from the camera, so edges stay crisp.
-          vec3 pxX = vec3( cellPerPxX, dot( slope, cellPerPxX ) );
-          vec3 pxY = vec3( cellPerPxY, dot( slope, cellPerPxY ) );
-          vec3 outward = onSkin / max( dist, 1e-6 );
-          float edge = 0.5 * max( length( vec2( dot( outward, pxX ), dot( outward, pxY ) ) ), 1e-6 );
-          float coverage = 1.0 - smoothstep( radius - edge, radius + edge, dist );
-          // Where dots get squashed under ~2-3 pixels apart (skin turning
-          // edge-on to the camera) they can't be drawn without shimmering:
-          // fade them out -- never into a solid tint, which would read as
-          // see-through skin.
-          float squash = max( length( pxX ), length( pxY ) );
-          coverage *= 1.0 - smoothstep( 0.3, 0.5, squash );
-          // A zero-radius dot must vanish completely (the anti-aliased
-          // edge would otherwise leave a faint speck at its center).
-          return coverage * smoothstep( 0.0, 0.04, radius );
-        }`
-      )
-      .replace(
-        "#include <opaque_fragment>",
-        `float creviceOpen = smoothstep( uAODarkBelow, uAOLightAbove, vOcclusion );
-        outgoingLight *= mix( 1.0, creviceOpen, clamp( uAOStrength, 0.0, 1.0 ) );
-
-        // 1 = in shadow (biggest dots), 0 = fully lit (smallest).
-        float lightLevel = dot( outgoingLight, vec3( 0.2126, 0.7152, 0.0722 ) );
-        float shade = 1.0 - smoothstep( uDotLightDark, uDotLightBright, lightLevel );
-        float highlight = clamp( vHighlight, 0.0, 1.0 );
-
-        float dotRadius = mix( uDotMinRadius, uDotMaxRadius, shade );
-        dotRadius *= mix( 1.0, uDotHighlightGrow, highlight );
-        // Past 0.5 a dot would be clipped square by its cell border.
-        dotRadius = clamp( dotRadius, 0.0, 0.48 );
-        float dotOpacity = mix( uDotMinOpacity, uDotMaxOpacity, shade );
-        dotOpacity = mix( dotOpacity, max( dotOpacity, uDotHighlightOpacity ), highlight );
-
-        // Front/back faces use (x, y), sides (z, y), top/bottom (x, z):
-        // rows stay horizontal everywhere but the top/bottom. Where the
-        // skin turns from one to another, each grid's dots shrink away
-        // toward the switch (instead of the two grids cross-fading into
-        // overlapping ghost dots), leaving one tidy crease of small dots.
-        vec3 skinNormal = normalize( vDotNormal );
-        vec3 facing = pow( abs( skinNormal ), vec3( uDotProjectionSharpness ) );
-        facing /= max( facing.x + facing.y + facing.z, 1e-6 );
-        vec3 gridRadius = dotRadius * smoothstep( vec3( 0.4 ), vec3( 0.75 ), facing );
-        float coverX = dotGridCoverage( vDotPos.zy, skinNormal.zy, skinNormal.x, gridRadius.x );
-        float coverY = dotGridCoverage( vDotPos.xz, skinNormal.xz, skinNormal.y, gridRadius.y );
-        float coverZ = dotGridCoverage( vDotPos.xy, skinNormal.xy, skinNormal.z, gridRadius.z );
-        float coverage = 1.0 - ( 1.0 - coverX ) * ( 1.0 - coverY ) * ( 1.0 - coverZ );
-
-        float dotAlpha = clamp( coverage * clamp( dotOpacity, 0.0, 1.0 ), 0.0, 1.0 );
-        // Everything between the dots: let the page show through.
-        if ( dotAlpha < 0.004 ) discard;
-        gl_FragColor = vec4( mix( uDotColor, uHighlightColor, highlight ), dotAlpha );`
-      );
-  };
-  // Every dot material compiles to identical shader source (all the
-  // tunables are uniforms), so they can share one GPU program; each
-  // material still gets its own uniforms (uDotSpace) from its own
-  // onBeforeCompile. Bump the suffix if the shader code above changes.
-  material.customProgramCacheKey = () => "dots-v3";
   return material;
+}
+
+/** Turns placed dots into a drawable cloud riding the same skeleton. */
+function createDotCloud(data: DotCloudData, uniforms: DotUniforms): Mesh {
+  const geometry = new InstancedBufferGeometry();
+  geometry.setIndex([0, 1, 2, 0, 2, 3]);
+  geometry.setAttribute(
+    "aCorner",
+    new BufferAttribute(new Float32Array([-1, -1, 1, -1, 1, 1, -1, 1]), 2)
+  );
+  geometry.setAttribute("position", new InstancedBufferAttribute(data.anchors, 3));
+  geometry.setAttribute("normal", new InstancedBufferAttribute(data.normals, 3));
+  if (data.skinIndex && data.skinWeight) {
+    geometry.setAttribute("skinIndex", new InstancedBufferAttribute(data.skinIndex, 4));
+    geometry.setAttribute("skinWeight", new InstancedBufferAttribute(data.skinWeight, 4));
+  }
+  // Fully open until the crevice bake lands.
+  geometry.setAttribute(
+    "aOcclusion",
+    new InstancedBufferAttribute(new Float32Array(data.count).fill(1), 1)
+  );
+  geometry.setAttribute(
+    "aHighlightFrom",
+    new InstancedBufferAttribute(new Float32Array(data.count), 1)
+  );
+  geometry.setAttribute(
+    "aHighlightTo",
+    new InstancedBufferAttribute(new Float32Array(data.count), 1)
+  );
+  geometry.instanceCount = data.count;
+
+  const material = createDotCloudMaterial(uniforms, data.referenceToMeshScale);
+  const source = data.source as SkinnedMesh;
+  let dots: Mesh;
+  if (source.isSkinnedMesh && data.skinIndex) {
+    const skinnedDots = new SkinnedMesh(geometry, material);
+    skinnedDots.bindMode = source.bindMode;
+    skinnedDots.bind(source.skeleton, source.bindMatrix);
+    dots = skinnedDots;
+  } else {
+    dots = new Mesh(geometry, material);
+  }
+  dots.name = `${source.name}-dots`;
+  dots.userData.isDotCloud = true;
+  // The anchors aren't where the quads end up, so bounds would be wrong.
+  dots.frustumCulled = false;
+  // Draw after everything else (e.g. the floor's contact shadow).
+  dots.renderOrder = 10;
+  // Same place in the hierarchy and same transform as the body mesh, so
+  // the skinning math is identical.
+  dots.position.copy(source.position);
+  dots.quaternion.copy(source.quaternion);
+  dots.scale.copy(source.scale);
+  source.parent?.add(dots);
+  return dots;
 }
 
 /**
@@ -1012,26 +1571,41 @@ function PosableModel({
     new Map()
   );
 
-  // Shared by every mesh's dot material (see createDotMaterial) so
-  // animating uBlend / uAOStrength once in useFrame updates the whole
-  // model at once.
+  // Shared by every dot cloud's material (see createDotCloudMaterial) so
+  // animating uBlend / uAOStrength / uReveal once in useFrame updates
+  // every dot at once.
   const [dotUniforms] = useState(createDotUniforms);
   // Target for uAOStrength -- flipped to AO_STRENGTH when the bake lands.
   const aoTargetStrength = useRef(0);
+  // Target for uReveal -- flipped to 1 once the dots have been placed.
+  const revealTarget = useRef(0);
+  // The dot clouds currently in the scene (hidden during the depth pass).
+  const dotCloudsRef = useRef<Mesh[]>([]);
+  // Highlight region of the current view, so dot clouds created mid-way
+  // start out with the right colors.
+  const activeRegionRef = useRef<string | null>(null);
 
-  // Swaps every mesh's material for the dotted look: an invisible
-  // depth-only occluder plus the dot material on top (see
-  // createOccluderMaterial / createDotMaterial). Both draw the same
-  // triangles of the same skinned mesh -- via two geometry groups covering
-  // the whole mesh, one per material -- so they share one skeleton and
-  // can never drift apart in any pose. Each dot material keeps the
-  // ORIGINAL Blender slot name (e.g. "femaleheart") as its name.
+  // The body's depth, rendered every frame before the dots (see the
+  // render pass at the bottom), which each dot checks to know whether the
+  // body hides it.
+  const [bodyDepthTarget] = useState(
+    () => new WebGLRenderTarget(1, 1, { depthTexture: new DepthTexture(1, 1) })
+  );
+  const [drawingBufferSize] = useState(() => new Vector2());
+  useEffect(() => {
+    dotUniforms.uBodyDepth.value = bodyDepthTarget.depthTexture;
+    return () => bodyDepthTarget.dispose();
+  }, [bodyDepthTarget, dotUniforms]);
+
+  // Makes the body itself invisible: every body mesh gets the depth-only
+  // occluder material (see createOccluderMaterial), keeping the ORIGINAL
+  // Blender slot name (e.g. "femaleheart") in its name. The dots are
+  // added separately, once placed (next effect).
   //
   // This same effect also computes the smooth per-vertex highlight fields
-  // (buildVertexHighlightFields) and attaches the aHighlightFrom/
-  // aHighlightTo attributes every dot material reads from -- both are
-  // one-time, geometry-driven setup, so they belong together and both key
-  // off [scene] only (not [view]).
+  // (buildVertexHighlightFields), which the dots pick up when they're
+  // placed -- both are one-time, geometry-driven setup, so they key off
+  // [scene] only (not [view]).
   useEffect(() => {
     const regionNames = Array.from(
       new Set(
@@ -1047,111 +1621,135 @@ function PosableModel({
     );
     highlightFieldsRef.current = fields;
 
-    const meshes: Mesh[] = [];
-    scene.traverse((obj) => {
-      const mesh = obj as Mesh;
-      if (mesh.isMesh) meshes.push(mesh);
-    });
-
-    // One shared space for the dot grid, so it lines up across every
-    // mesh: the first mesh's own geometry space (same reasoning as in
-    // bakeVertexOcclusion -- y is up, ~4.43 units tall, which is what
-    // DOT_SPACING is measured in).
-    scene.updateMatrixWorld(true);
-    const referenceInverse = meshes.length
-      ? new Matrix4().copy(meshes[0].matrixWorld).invert()
-      : new Matrix4();
-
-    for (const mesh of meshes) {
+    for (const mesh of collectBodyMeshes(scene)) {
       const { geometry } = mesh;
       const regionName = getRegionName(mesh);
 
       // Re-running on the same cached scene (StrictMode, hot reload,
-      // remount): free the pair a previous run created. The GLB's own
-      // original materials are left alone.
+      // remount): free the material(s) a previous run created, and undo
+      // what older versions of this effect added to the geometry. The
+      // GLB's own original materials are left alone.
       const previous = mesh.material;
       for (const old of Array.isArray(previous) ? previous : [previous]) {
         if (old?.userData.dotLook) old.dispose();
       }
-
-      const dotSpace = new Matrix4().multiplyMatrices(
-        referenceInverse,
-        mesh.matrixWorld
-      );
-      // Group 0 = occluder, group 1 = dots, each covering every triangle.
-      const drawCount = geometry.index
-        ? geometry.index.count
-        : geometry.attributes.position.count;
       geometry.clearGroups();
-      geometry.addGroup(0, drawCount, 0);
-      geometry.addGroup(0, drawCount, 1);
-      mesh.material = [
-        createOccluderMaterial(regionName),
-        createDotMaterial(regionName, dotUniforms, dotSpace),
-      ];
+      geometry.deleteAttribute("aHighlightFrom");
+      geometry.deleteAttribute("aHighlightTo");
+      geometry.deleteAttribute("aOcclusion");
 
-      // castShadow: the body still shadows itself (nose onto upper lip,
-      // chin onto neck, arms onto torso), which makes those dots bigger.
-      // receiveShadow: the dot material's lighting includes those shadows.
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-
-      const vertCount = geometry.attributes.position.count;
-      mesh.geometry.setAttribute(
-        "aHighlightFrom",
-        new BufferAttribute(new Float32Array(vertCount), 1)
-      );
-      mesh.geometry.setAttribute(
-        "aHighlightTo",
-        new BufferAttribute(new Float32Array(vertCount), 1)
-      );
-      // Fully open (1) until the occlusion bake below fills in real values.
-      // Kept in place if a bake already filled it (e.g. a remount reusing
-      // useGLTF's cached scene).
-      if (!mesh.geometry.getAttribute("aOcclusion")) {
-        mesh.geometry.setAttribute(
-          "aOcclusion",
-          new BufferAttribute(new Float32Array(vertCount).fill(1), 1)
-        );
-      }
+      mesh.material = createOccluderMaterial(regionName);
+      // Nothing is lit with shadow maps any more (the dots compute their
+      // own lighting), so the body neither casts nor receives them.
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
     }
-  }, [scene, dotUniforms]);
+  }, [scene]);
 
-  // Bake the crevice darkening (see bakeVertexOcclusion) a few
-  // milliseconds per frame so the page stays responsive while it runs,
-  // then write the results into each mesh's aOcclusion attribute and let
-  // useFrame fade the effect in. Cancelled cleanly if the model unmounts
-  // mid-bake (or React's dev StrictMode double-runs this effect).
+  // Places the dots on the skin (see placeSurfaceDots), adds them to the
+  // scene and fades them in -- then bakes the crevice darkening (see
+  // bakeVertexOcclusion) and fades that in too. Runs a few milliseconds
+  // per frame so the page stays responsive. Cancelled cleanly, with the
+  // dots removed again, if the model unmounts (or React's dev StrictMode
+  // double-runs this effect).
   useEffect(() => {
-    const bake = bakeVertexOcclusion(scene);
+    const clouds: { dots: Mesh; data: DotCloudData }[] = [];
+    let surface: MergedSurface | null = null;
+    let placing: Generator<void, DotCloudData[], void> | null = null;
+    let baking: Generator<void, Map<string, Float32Array>, void> | null = null;
     let frame = 0;
+
+    revealTarget.current = 0;
+    dotUniforms.uReveal.value = 0;
+    aoTargetStrength.current = 0;
+    dotUniforms.uAOStrength.value = 0;
+
+    const addDotClouds = (placed: DotCloudData[]) => {
+      const activeRegion = activeRegionRef.current;
+      for (const data of placed) {
+        if (data.count === 0) continue;
+        const dots = createDotCloud(data, dotUniforms);
+
+        // Carry the per-vertex highlight fields over to the dots, and
+        // start them on the current view's colors.
+        const sourceFields = highlightFieldsRef.current.get(data.source.uuid) ?? {};
+        const dotFields: Record<string, Float32Array> = {};
+        for (const [region, values] of Object.entries(sourceFields)) {
+          dotFields[region] = interpolateToDots(values, data);
+        }
+        highlightFieldsRef.current.set(dots.uuid, dotFields);
+        const current = activeRegion ? dotFields[activeRegion] : undefined;
+        if (current) {
+          for (const name of ["aHighlightFrom", "aHighlightTo"]) {
+            const attr = dots.geometry.getAttribute(name) as BufferAttribute;
+            (attr.array as Float32Array).set(current);
+            attr.needsUpdate = true;
+          }
+        }
+        clouds.push({ dots, data });
+      }
+      dotCloudsRef.current = clouds.map((cloud) => cloud.dots);
+      revealTarget.current = 1;
+    };
+
+    const applyOcclusion = (openness: Map<string, Float32Array>) => {
+      for (const { dots, data } of clouds) {
+        const values = openness.get(data.source.uuid);
+        if (!values) continue;
+        const attr = dots.geometry.getAttribute("aOcclusion") as BufferAttribute;
+        (attr.array as Float32Array).set(interpolateToDots(values, data));
+        attr.needsUpdate = true;
+      }
+      aoTargetStrength.current = AO_STRENGTH;
+    };
 
     const step = () => {
       const deadline = performance.now() + AO_BAKE_BUDGET_MS;
       while (performance.now() < deadline) {
-        const next = bake.next();
-        if (!next.done) continue;
-
-        scene.traverse((obj) => {
-          const mesh = obj as Mesh;
-          if (!mesh.isMesh) return;
-          const values = next.value.get(mesh.uuid);
-          const attr = mesh.geometry.getAttribute("aOcclusion") as
-            | BufferAttribute
-            | undefined;
-          if (!values || !attr) return;
-          (attr.array as Float32Array).set(values);
-          attr.needsUpdate = true;
-        });
-        aoTargetStrength.current = AO_STRENGTH;
+        if (!surface) {
+          const meshes = collectBodyMeshes(scene);
+          if (meshes.length === 0) return;
+          surface = buildMergedSurface(meshes);
+          placing = placeSurfaceDots(surface);
+          continue;
+        }
+        if (placing) {
+          const next = placing.next();
+          if (next.done) {
+            placing = null;
+            addDotClouds(next.value);
+            baking = bakeVertexOcclusion(surface);
+          }
+          continue;
+        }
+        if (baking) {
+          const next = baking.next();
+          if (next.done) {
+            baking = null;
+            applyOcclusion(next.value);
+            surface.geometry.dispose();
+            return;
+          }
+          continue;
+        }
         return;
       }
       frame = requestAnimationFrame(step);
     };
 
     frame = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(frame);
-  }, [scene]);
+    return () => {
+      cancelAnimationFrame(frame);
+      surface?.geometry.dispose();
+      for (const { dots } of clouds) {
+        dots.removeFromParent();
+        dots.geometry.dispose();
+        (dots.material as Material).dispose();
+        highlightFieldsRef.current.delete(dots.uuid);
+      }
+      dotCloudsRef.current = [];
+    };
+  }, [scene, dotUniforms]);
 
   // Button click (or initial mount) -- just record which pose SHOULD be
   // active. All the actual weight blending happens continuously in
@@ -1179,6 +1777,7 @@ function PosableModel({
   // pose blending above, just for color.
   useEffect(() => {
     const activeRegion = HIGHLIGHT_REGION_NAMES[view];
+    activeRegionRef.current = activeRegion;
     const fieldsByMesh = highlightFieldsRef.current;
     const blendSoFar = dotUniforms.uBlend.value;
 
@@ -1266,18 +1865,57 @@ function PosableModel({
     }
 
     // Ease the dot-color blend scalar from 0 toward 1 every frame.
-    // Updating this one uniform is all it takes to fade every mesh's dots
-    // at once, since they all share the same uniforms object (see
-    // dotUniforms / createDotMaterial).
+    // Updating this one uniform is all it takes to fade every dot at
+    // once, since they all share the same uniforms object (see
+    // dotUniforms / createDotCloudMaterial).
     const hk = 1 - Math.exp(-delta * HIGHLIGHT_FADE_SPEED);
     dotUniforms.uBlend.value += (1 - dotUniforms.uBlend.value) * hk;
 
     // Same easing for the crevice darkening, from 0 up to AO_STRENGTH
-    // once the bake has landed (see aoTargetStrength).
+    // once the bake has landed (see aoTargetStrength)...
     const ak = 1 - Math.exp(-delta * AO_FADE_SPEED);
     dotUniforms.uAOStrength.value +=
       (aoTargetStrength.current - dotUniforms.uAOStrength.value) * ak;
+
+    // ...and for the dots fading in once they've been placed.
+    const rk = 1 - Math.exp(-delta * DOT_REVEAL_SPEED);
+    dotUniforms.uReveal.value += (revealTarget.current - dotUniforms.uReveal.value) * rk;
   });
+
+  // Renders the frame. Priority 1 takes over R3F's own render call, and
+  // also guarantees this runs AFTER every other useFrame this frame -- in
+  // particular the animation mixer and the camera rig -- so the body depth
+  // below always matches the exact pose and camera the dots are drawn
+  // with (no one-frame lag during pose changes).
+  //
+  // First pass: just the (invisible) body, into bodyDepthTarget -- its
+  // depth texture tells every dot whether the body is in front of it.
+  // Second pass: the whole scene to the screen as usual.
+  useFrame((state) => {
+    const { gl, camera } = state;
+
+    gl.getDrawingBufferSize(drawingBufferSize);
+    if (
+      bodyDepthTarget.width !== drawingBufferSize.x ||
+      bodyDepthTarget.height !== drawingBufferSize.y
+    ) {
+      bodyDepthTarget.setSize(drawingBufferSize.x, drawingBufferSize.y);
+    }
+    dotUniforms.uResolution.value.copy(drawingBufferSize);
+    const perspective = camera as PerspectiveCamera;
+    dotUniforms.uCameraNear.value = perspective.near;
+    dotUniforms.uCameraFar.value = perspective.far;
+
+    const clouds = dotCloudsRef.current;
+    for (const dots of clouds) dots.visible = false;
+    const previousTarget = gl.getRenderTarget();
+    gl.setRenderTarget(bodyDepthTarget);
+    gl.render(scene, camera);
+    gl.setRenderTarget(previousTarget);
+    for (const dots of clouds) dots.visible = true;
+
+    gl.render(state.scene, camera);
+  }, 1);
 
   return (
     <group ref={groupRef} scale={MAN_MESH_SCALE}>
