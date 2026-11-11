@@ -20,6 +20,7 @@ import {
   Mesh,
   MeshBasicMaterial,
   NeutralToneMapping,
+  OrthographicCamera,
   PerspectiveCamera,
   Ray,
   ShaderMaterial,
@@ -110,25 +111,25 @@ const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
 
 // Resting dot color: a soft, low-saturation cyan that sits well on the
 // white page.
-const DOT_COLOR = "#7acaeb";
+const DOT_COLOR = "#dcdcdc";
 // Dot color inside whichever region is currently highlighted. The dots
 // in that region fade from DOT_COLOR to this (and grow slightly, see
 // DOT_HIGHLIGHT_GROW); switching regions fades the old one back to
 // DOT_COLOR at the same time. The skin itself is never tinted.
-const HIGHLIGHT_COLOR = "#f29450";
+const HIGHLIGHT_COLOR = "#8df0b0";
 
 // Distance between neighboring dots (rows and columns), in the GLB's own
 // unscaled units -- the female model is ~4.43 units tall, so 0.018 is
 // ~6.5mm on the rendered body (~250 rows head to toe). Smaller = finer.
-const DOT_SPACING = 0.018;
+const DOT_SPACING = 0.01;
 // Dot radius as a fraction of DOT_SPACING (0.5 = neighbors touch), for
 // fully lit skin (MIN) and for skin in shadow / inside crevices (MAX).
 // Halftone: the darker a spot is lit, the bigger its dot. Dots always
 // face the screen, so this is their on-screen size wherever they sit.
-const DOT_MIN_RADIUS = 0.17;
-const DOT_MAX_RADIUS = 0.36;
+const DOT_MIN_RADIUS = 0.2;
+const DOT_MAX_RADIUS = 0.4;
 // Dot opacity for fully lit (MIN) and fully shadowed (MAX) skin.
-const DOT_MIN_OPACITY = 0.6;
+const DOT_MIN_OPACITY = 0.7;
 const DOT_MAX_OPACITY = 1;
 // Which lit brightness counts as "in shadow" (at or below DOT_LIGHT_DARK:
 // MAX radius/opacity) and "fully lit" (at or above DOT_LIGHT_BRIGHT: MIN
@@ -516,16 +517,17 @@ function buildVertexHighlightFields(
 const AO_RAY_COUNT = 16;
 // How far a ray looks for blocking geometry, in the GLB's own unscaled
 // units (the female model is ~4.43 units tall, so 0.1 is a few cm on the
-// rendered body). Big enough to catch nostrils, ears and eye sockets;
-// raise it to also darken broader areas like armpits / between the legs.
-const AO_RAY_DISTANCE = 0.08;
+// rendered body). 0.08 only catches nostrils, ears and eye sockets; 0.25
+// (~9cm) also darkens broader areas -- armpits, under the chin and
+// breasts, the neck, between the legs -- for a more sculpted look.
+const AO_RAY_DISTANCE = 0.25;
 // Nudges each ray's start off the surface so it doesn't hit its own
 // triangle. Same units as AO_RAY_DISTANCE.
 const AO_RAY_BIAS = 0.002;
 // How dark the darkest crevices get: 0 = off, 1 = pure black. Clamped to
 // 0..1 in the shader -- above 1 the blend overshoots into negative light
 // and whole recessed areas (e.g. the eyes) turn solid black.
-const AO_STRENGTH = 0.6;
+const AO_STRENGTH = 0.8;
 // Which baked values count as a crevice. Measured on the female model at
 // AO_RAY_DISTANCE 0.08: nostrils ~0.15-0.25, lip line ~0.25-0.5, eyes
 // (recessed behind the lids) ~0.6-0.7, open skin 1. Anything at or below
@@ -1204,6 +1206,15 @@ interface DotUniforms {
   uResolution: { value: Vector2 };
   uCameraNear: { value: number };
   uCameraFar: { value: number };
+  uKeyLightDirection: { value: Vector3 };
+  uKeyLightIntensity: { value: number };
+  uKeyShadowMap: { value: Texture | null };
+  uKeyShadowMatrix: { value: Matrix4 };
+  uKeyShadowDepthRange: { value: number };
+  uKeyShadowStrength: { value: number };
+  uKeyShadowSoftness: { value: number };
+  uKeyShadowNormalOffset: { value: number };
+  uKeyShadowBias: { value: number };
 }
 
 function createDotUniforms(): DotUniforms {
@@ -1233,6 +1244,18 @@ function createDotUniforms(): DotUniforms {
     uResolution: { value: new Vector2(1, 1) },
     uCameraNear: { value: 0.1 },
     uCameraFar: { value: 1000 },
+    // World-space direction toward the key light (see KEY_LIGHT_POS).
+    uKeyLightDirection: { value: new Vector3(...KEY_LIGHT_POS).normalize() },
+    uKeyLightIntensity: { value: KEY_LIGHT_INTENSITY },
+    // Set up by PosableModel's key-light shadow pass.
+    uKeyShadowMap: { value: null },
+    uKeyShadowMatrix: { value: new Matrix4() },
+    uKeyShadowDepthRange: { value: 1 },
+    uKeyShadowStrength: { value: KEY_SHADOW_STRENGTH },
+    // As a fraction of the shadow map's width.
+    uKeyShadowSoftness: { value: KEY_SHADOW_SOFTNESS / (2 * KEY_SHADOW_EXTENT) },
+    uKeyShadowNormalOffset: { value: KEY_SHADOW_NORMAL_OFFSET },
+    uKeyShadowBias: { value: KEY_SHADOW_BIAS },
   };
 }
 
@@ -1292,6 +1315,42 @@ const DOT_VERTEX_SHADER = /* glsl */ `
   uniform vec2 uResolution;
   uniform float uCameraNear;
   uniform float uCameraFar;
+  uniform vec3 uKeyLightDirection;
+  uniform float uKeyLightIntensity;
+  uniform sampler2D uKeyShadowMap;
+  uniform mat4 uKeyShadowMatrix;
+  uniform float uKeyShadowDepthRange;
+  uniform float uKeyShadowStrength;
+  uniform float uKeyShadowSoftness;
+  uniform float uKeyShadowNormalOffset;
+  uniform float uKeyShadowBias;
+
+  // Poisson-disk taps (unit disk) for the soft shadow edge.
+  const int KEY_SHADOW_TAPS = 12;
+  const vec2 KEY_SHADOW_DISK[ 12 ] = vec2[ 12 ](
+    vec2( -0.326, -0.406 ), vec2( -0.840, -0.074 ), vec2( -0.696, 0.457 ),
+    vec2( -0.203, 0.621 ), vec2( 0.962, -0.195 ), vec2( 0.473, -0.480 ),
+    vec2( 0.519, 0.767 ), vec2( 0.185, -0.893 ), vec2( 0.507, 0.064 ),
+    vec2( 0.896, 0.412 ), vec2( -0.322, -0.933 ), vec2( -0.792, -0.598 )
+  );
+
+  // How much of the key light reaches this world-space point on the skin:
+  // 1 = fully lit, 0 = fully in the body's own shadow. Compares the point's
+  // depth (seen from the light) with the key-light depth pass, at several
+  // nearby spots for a soft edge.
+  float keyLightVisibility( vec3 worldPos, vec3 worldNormal ) {
+    vec4 lightClip = uKeyShadowMatrix * vec4( worldPos + worldNormal * uKeyShadowNormalOffset, 1.0 );
+    vec3 coord = lightClip.xyz / lightClip.w * 0.5 + 0.5;
+    if ( any( lessThan( coord, vec3( 0.0 ) ) ) || any( greaterThan( coord, vec3( 1.0 ) ) ) ) return 1.0;
+    float depth = coord.z * uKeyShadowDepthRange - uKeyShadowBias;
+    float lit = 0.0;
+    for ( int i = 0; i < KEY_SHADOW_TAPS; i ++ ) {
+      vec2 uv = coord.xy + KEY_SHADOW_DISK[ i ] * uKeyShadowSoftness;
+      float blocker = textureLod( uKeyShadowMap, uv, 0.0 ).r * uKeyShadowDepthRange;
+      lit += step( depth, blocker );
+    }
+    return lit / float( KEY_SHADOW_TAPS );
+  }
 
   varying vec2 vCorner;
   varying float vRadiusPx;
@@ -1347,6 +1406,17 @@ const DOT_VERTEX_SHADER = /* glsl */ `
       }
       #pragma unroll_loop_end
     #endif
+    // The key light, with the body's cast shadows (only tested where it
+    // can reach at all -- the turned-away side is dark either way).
+    vec3 keyDirection = normalize( ( viewMatrix * vec4( uKeyLightDirection, 0.0 ) ).xyz );
+    float keyNdotL = saturate( dot( viewNormal, keyDirection ) );
+    if ( keyNdotL > 0.0 ) {
+      vec3 worldPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+      // View -> world for directions is the transpose (pure rotation).
+      vec3 worldNormal = normalize( viewNormal * mat3( viewMatrix ) );
+      float visibility = mix( 1.0, keyLightVisibility( worldPos, worldNormal ), uKeyShadowStrength );
+      irradiance += vec3( keyNdotL * visibility * uKeyLightIntensity );
+    }
     float creviceOpen = smoothstep( uAODarkBelow, uAOLightAbove, aOcclusion );
     float lightLevel = dot( irradiance * RECIPROCAL_PI, vec3( 0.2126, 0.7152, 0.0722 ) );
     lightLevel *= mix( 1.0, creviceOpen, clamp( uAOStrength, 0.0, 1.0 ) );
@@ -1596,6 +1666,34 @@ function PosableModel({
     dotUniforms.uBodyDepth.value = bodyDepthTarget.depthTexture;
     return () => bodyDepthTarget.dispose();
   }, [bodyDepthTarget, dotUniforms]);
+
+  // The key light's shadow map: the body's depth as seen from the key
+  // light, rendered every frame (so it follows every pose). An orthographic
+  // camera, since the key is a directional light, framed around the body.
+  const [keyShadow] = useState(() => {
+    const target = new WebGLRenderTarget(KEY_SHADOW_MAP_SIZE, KEY_SHADOW_MAP_SIZE, {
+      depthTexture: new DepthTexture(KEY_SHADOW_MAP_SIZE, KEY_SHADOW_MAP_SIZE),
+    });
+    const e = KEY_SHADOW_EXTENT;
+    const distance = 10;
+    const camera = new OrthographicCamera(-e, e, e, -e, distance - 3, distance + 3);
+    // Centered on the body (~1.6m tall, feet at the origin).
+    const center = new Vector3(0, 0.85, 0);
+    camera.position.copy(new Vector3(...KEY_LIGHT_POS).normalize().multiplyScalar(distance).add(center));
+    camera.lookAt(center);
+    camera.updateMatrixWorld(true);
+    return { target, camera };
+  });
+  useEffect(() => {
+    const { target, camera } = keyShadow;
+    dotUniforms.uKeyShadowMap.value = target.depthTexture;
+    dotUniforms.uKeyShadowMatrix.value.multiplyMatrices(
+      camera.projectionMatrix,
+      camera.matrixWorldInverse
+    );
+    dotUniforms.uKeyShadowDepthRange.value = camera.far - camera.near;
+    return () => target.dispose();
+  }, [keyShadow, dotUniforms]);
 
   // Makes the body itself invisible: every body mesh gets the depth-only
   // occluder material (see createOccluderMaterial), keeping the ORIGINAL
@@ -1911,6 +2009,8 @@ function PosableModel({
     const previousTarget = gl.getRenderTarget();
     gl.setRenderTarget(bodyDepthTarget);
     gl.render(scene, camera);
+    gl.setRenderTarget(keyShadow.target);
+    gl.render(scene, keyShadow.camera);
     gl.setRenderTarget(previousTarget);
     for (const dots of clouds) dots.visible = true;
 
@@ -1924,64 +2024,49 @@ function PosableModel({
   );
 }
 
-// Soft studio lighting: one shadow-casting light from the top, plus weak
-// fills from below, left, right and behind to lift and soften what the
-// top light leaves dark. The fills deliberately cast no shadows (cheaper,
-// and their job is to soften) -- the crevice darkening above is what
-// keeps nostrils/ears dark however many fills there are. Positions are
-// mirrored 1:1 onto the <directionalLight>s in the JSX below; all aim at
-// the origin (the model's feet).
+// Dramatic studio lighting. Lit skin = small, faint dots; skin in shadow
+// = big, solid dots -- so contrast here is what gives the body its shape.
 //
-// The overall look is high-key: bright, low-contrast fill so the white
-// body melts into the white page background, with only the crevices
-// (via the AO above) and soft partial shadows giving it shape.
-//
-// TOP (key): above and in front. ~45 degrees up rather than steeper, so
-// the brow doesn't throw the eye sockets into deep shadow.
-const TOP_LIGHT_POS: Vector3Tuple = [10, 45, 45];
-const TOP_LIGHT_INTENSITY = 1.6;
-// BOTTOM: weak, from below/front -- lifts under the chin and arms.
-const BOTTOM_LIGHT_POS: Vector3Tuple = [0, -50, 40];
-const BOTTOM_LIGHT_INTENSITY = 0.25;
-// LEFT / RIGHT: side fills at roughly chest height, slightly in front.
-const LEFT_LIGHT_POS: Vector3Tuple = [-60, 15, 20];
-const LEFT_LIGHT_INTENSITY = 0.55;
-const RIGHT_LIGHT_POS: Vector3Tuple = [60, 15, 20];
-const RIGHT_LIGHT_INTENSITY = 0.55;
-// BACK: rim light from behind and above, brightens the silhouette edge
-// so it fades into the background instead of outlining it.
-const BACK_LIGHT_POS: Vector3Tuple = [0, 40, -60];
-const BACK_LIGHT_INTENSITY = 0.9;
+// The KEY light (top-left, in front) does most of the work and is the
+// only one that casts shadows: nose, chin, breasts and arms throw real
+// shadows onto the body (see the key-light shadow pass in PosableModel).
+// It's not a three.js light -- only the dots are lit, and they read it
+// from their own uniforms (see createDotUniforms) -- so it's set up here
+// instead of in the JSX. Positions are directions toward the light, from
+// the body; only the direction matters.
+const KEY_LIGHT_POS: Vector3Tuple = [-3, 4.5, 3];
+const KEY_LIGHT_INTENSITY = 3.2;
+// How dark the key light's shadows are: 0 = no shadows, 1 = the key light
+// is fully blocked (only the fills and ambient reach the shadowed skin).
+const KEY_SHADOW_STRENGTH = 0.9;
+// Width of the shadows' soft edge, in meters on the rendered body.
+const KEY_SHADOW_SOFTNESS = 0.012;
+// Half-size (meters) of the square area around the body the shadow map
+// covers, and its resolution. 1.3 holds the whole body with arms out,
+// at ~1.3mm per texel.
+const KEY_SHADOW_EXTENT = 1.3;
+const KEY_SHADOW_MAP_SIZE = 2048;
+// Anti-acne: each dot is tested a little off the skin (along its normal)
+// and given a little depth slack, both in meters. Too small = speckled
+// self-shadowing; too big = shadows detach from what casts them.
+const KEY_SHADOW_NORMAL_OFFSET = 0.006;
+const KEY_SHADOW_BIAS = 0.003;
 
-// Sky/ground ambient (replaces the old flat ambientLight): surfaces
-// facing up get the sky color, surfaces facing down the (only slightly
-// darker) ground color. This is the main "softness" knob -- higher
-// intensity / lighter ground = flatter, whiter, more washed into the bg.
+// FILL: weak, from the right at about head height -- keeps the shadow
+// side from going entirely flat, but stays well below the key.
+const FILL_LIGHT_POS: Vector3Tuple = [4, 0.5, 2];
+const FILL_LIGHT_INTENSITY = 0.35;
+// RIM: from behind on the right, above -- a thin bright edge along the
+// shoulders and the right side that separates them from the background.
+const RIM_LIGHT_POS: Vector3Tuple = [3, 3, -4];
+const RIM_LIGHT_INTENSITY = 1.0;
+
+// Sky/ground ambient: the floor of how dark anything gets. Kept low (and
+// the ground color darker) so the shadow side stays dramatic; raise it to
+// flatten the whole look.
 const HEMI_SKY_COLOR = "#ffffff";
-const HEMI_GROUND_COLOR = "#dcd9d5";
-const HEMI_INTENSITY = 1.4;
-
-// Top light's shadow. The default shadow camera covers 10x10 units -- at
-// 2048px that's still ~5mm/texel; fitting it around the body (~1.6 tall
-// after MAN_MESH_SCALE, at the origin) gives ~1mm. near/far bracket the
-// light's ~64-unit distance for depth precision. radius blurs the edge
-// (soft shadows with the "percentage" shadow type set on <Canvas>);
-// intensity < 1 makes shadows only partially block the light, so they
-// read as soft shading instead of dark patches; the biases suppress acne
-// on the skinned mesh.
-const TOP_LIGHT_SHADOW = {
-  "shadow-mapSize": [2048, 2048] as [number, number],
-  "shadow-camera-left": -1.2,
-  "shadow-camera-right": 1.2,
-  "shadow-camera-top": 1.2,
-  "shadow-camera-bottom": -1.2,
-  "shadow-camera-near": 55,
-  "shadow-camera-far": 80,
-  "shadow-radius": 8,
-  "shadow-intensity": 0.1,
-  "shadow-bias": -0.0005,
-  "shadow-normalBias": 0.02,
-};
+const HEMI_GROUND_COLOR = "#a9a6a3";
+const HEMI_INTENSITY = 0.5;
 
 function CameraRig({ view }: { view: ViewKey }) {
   const target = useRef(new Vector3(...VIEWS.reset.target));
@@ -2014,10 +2099,8 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
       style={{ background: PAGE_BACKGROUND }}
     >
       <Canvas
-        // "percentage" = PCFShadowMap. Plain `shadows` picks
-        // PCFSoftShadowMap, which this three version has deprecated (it
-        // warns and falls back anyway); softness comes from shadow-radius.
-        shadows="percentage"
+        // No three.js shadow maps: the key light's shadows are rendered by
+        // PosableModel's own pass (and ContactShadows renders its own).
         gl={{ alpha: true }}
         // R3F defaults to ACES tone mapping, which pulls pure white down to
         // a light grey -- the model could never match the white page. The
@@ -2035,18 +2118,9 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
         <hemisphereLight
           args={[HEMI_SKY_COLOR, HEMI_GROUND_COLOR, HEMI_INTENSITY]}
         />
-        {/* Top (key) light -- the only one casting shadows. */}
-        <directionalLight
-          position={TOP_LIGHT_POS}
-          intensity={TOP_LIGHT_INTENSITY}
-          castShadow
-          {...TOP_LIGHT_SHADOW}
-        />
-        {/* Soft fills: bottom, left, right, back. No shadows. */}
-        <directionalLight position={BOTTOM_LIGHT_POS} intensity={BOTTOM_LIGHT_INTENSITY} />
-        <directionalLight position={LEFT_LIGHT_POS} intensity={LEFT_LIGHT_INTENSITY} />
-        <directionalLight position={RIGHT_LIGHT_POS} intensity={RIGHT_LIGHT_INTENSITY} />
-        <directionalLight position={BACK_LIGHT_POS} intensity={BACK_LIGHT_INTENSITY} />
+        {/* The key light lives in the dot shader (see KEY_LIGHT_POS). */}
+        <directionalLight position={FILL_LIGHT_POS} intensity={FILL_LIGHT_INTENSITY} />
+        <directionalLight position={RIM_LIGHT_POS} intensity={RIM_LIGHT_INTENSITY} />
 
         <PosableModel key={MODEL_PATH} modelPath={MODEL_PATH} view={view} />
         <CameraRig view={view} />
