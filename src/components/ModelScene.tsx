@@ -12,7 +12,9 @@ import {
   LoopOnce,
   Matrix3,
   Matrix4,
+  Material,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   NeutralToneMapping,
   Ray,
@@ -87,11 +89,51 @@ const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   
 };
 
-// Tint color for whichever region is currently highlighted. This blends
-// directly into the surface's own (placeholder white, for now) albedo --
-// no emissive glow -- so it still reads as a normally-lit surface, just
-// tinted, and swapping in real textures later won't break this.
-const HIGHLIGHT_COLOR = "#bfffdb";
+// ---------------------------------------------------------------------
+// Dotted look. The body itself is invisible -- only a regular grid of
+// dots printed on the skin is drawn, with the page background showing
+// between them. See patchDotMaterial for how it works.
+// ---------------------------------------------------------------------
+
+// Resting dot color: a soft, low-saturation cyan that sits well on the
+// white page.
+const DOT_COLOR = "#7cc3cc";
+// Dot color inside whichever region is currently highlighted. The dots
+// in that region fade from DOT_COLOR to this (and grow slightly, see
+// DOT_HIGHLIGHT_GROW); switching regions fades the old one back to
+// DOT_COLOR at the same time. The skin itself is never tinted.
+const HIGHLIGHT_COLOR = "#22b585";
+
+// Distance between neighboring dots (rows and columns), in the GLB's own
+// unscaled units -- the female model is ~4.43 units tall, so 0.018 is
+// ~6.5mm on the rendered body (~250 rows head to toe). Smaller = finer.
+const DOT_SPACING = 0.018;
+// Dot radius as a fraction of DOT_SPACING (0.5 = neighbors touch), for
+// fully lit skin (MIN) and for skin in shadow / inside crevices (MAX).
+// Halftone: the darker a spot is lit, the bigger its dot.
+const DOT_MIN_RADIUS = 0.17;
+const DOT_MAX_RADIUS = 0.36;
+// Dot opacity for fully lit (MIN) and fully shadowed (MAX) skin.
+const DOT_MIN_OPACITY = 0.6;
+const DOT_MAX_OPACITY = 1;
+// Which lit brightness counts as "in shadow" (at or below DOT_LIGHT_DARK:
+// MAX radius/opacity) and "fully lit" (at or above DOT_LIGHT_BRIGHT: MIN
+// radius/opacity), smoothly in between. Brightness is the luminance of
+// the skin's final lit color (all lights + crevice darkening), before
+// tone mapping. Raise both to make dots bigger overall, lower both for
+// smaller; pull them apart for a gentler size range.
+const DOT_LIGHT_DARK = 0.25;
+const DOT_LIGHT_BRIGHT = 1.15;
+// Inside the highlighted region, dots grow by this factor and are at
+// least this opaque.
+const DOT_HIGHLIGHT_GROW = 1.25;
+const DOT_HIGHLIGHT_OPACITY = 0.95;
+// The grid is projected onto the body from the front/back, the sides and
+// above/below -- whichever the skin faces most -- with rows always
+// horizontal. Where the skin turns from facing one way to another (e.g.
+// the side of the torso, the top of the chest) each grid's dots shrink
+// away toward the switch; higher = narrower band of shrunken dots.
+const DOT_PROJECTION_SHARPNESS = 8;
 
 // How far (in the model's own unscaled local units -- the same space
 // MAN_MESH_SCALE is later applied to) a highlighted region's color bleeds
@@ -127,8 +169,8 @@ function getHighlightBlendRadius(regionName: string): number {
 // How fast the color transition eases in when switching views, in
 // roughly 1/seconds -- same exponential-decay idiom as POSE_BLEND_SPEED
 // above, just driving a single blend scalar instead of animation weights.
-// Higher = snappier.
-const HIGHLIGHT_FADE_SPEED = 6;
+// Higher = snappier. 4 -> the dot colors are ~95% faded after ~0.75s.
+const HIGHLIGHT_FADE_SPEED = 4;
 
 // Man_Mesh clean3.glb's own mesh is ~4.96 units tall, but every camera target/
 // distance above (e.g. head target y=1.68) was tuned assuming a roughly
@@ -263,6 +305,23 @@ interface MeshVertexData {
   regionName: string;
 }
 
+/**
+ * The Blender material-slot name a mesh was exported with. Read from the
+ * GLB's original material the first time, then remembered in userData --
+ * PosableModel swaps every mesh's material for an [occluder, dots] pair,
+ * so after that the original material (and its name) is gone. Remembering
+ * it keeps the highlight regions working if the setup effect runs again
+ * on the same cached scene (React StrictMode, hot reload, remount).
+ */
+function getRegionName(mesh: Mesh): string {
+  if (typeof mesh.userData.regionName !== "string") {
+    const original = mesh.material as Material | Material[] | undefined;
+    const first = Array.isArray(original) ? original[0] : original;
+    mesh.userData.regionName = first?.name ?? "";
+  }
+  return mesh.userData.regionName as string;
+}
+
 function collectMeshVertexData(scene: Group): MeshVertexData[] {
   const result: MeshVertexData[] = [];
   scene.traverse((obj) => {
@@ -270,11 +329,10 @@ function collectMeshVertexData(scene: Group): MeshVertexData[] {
     if (!mesh.isMesh) return;
     const posAttr = mesh.geometry?.attributes?.position;
     if (!posAttr) return;
-    const mat = mesh.material as MeshStandardMaterial | undefined;
     result.push({
       mesh,
       positions: new Float32Array(posAttr.array as ArrayLike<number>),
-      regionName: mat?.name ?? "",
+      regionName: getRegionName(mesh),
     });
   });
   return result;
@@ -645,36 +703,123 @@ function* bakeVertexOcclusion(
   return result;
 }
 
+// Uniforms shared by every mesh's dot material, so changing a value once
+// (e.g. easing uBlend in useFrame) updates the whole body at once.
+interface DotUniforms {
+  [name: string]: { value: unknown };
+  uBlend: { value: number };
+  uAOStrength: { value: number };
+  uAODarkBelow: { value: number };
+  uAOLightAbove: { value: number };
+  uDotColor: { value: Color };
+  uHighlightColor: { value: Color };
+  uDotSpacing: { value: number };
+  uDotMinRadius: { value: number };
+  uDotMaxRadius: { value: number };
+  uDotMinOpacity: { value: number };
+  uDotMaxOpacity: { value: number };
+  uDotLightDark: { value: number };
+  uDotLightBright: { value: number };
+  uDotHighlightGrow: { value: number };
+  uDotHighlightOpacity: { value: number };
+  uDotProjectionSharpness: { value: number };
+}
+
+function createDotUniforms(): DotUniforms {
+  return {
+    uBlend: { value: 0 },
+    // Starts at 0 (no crevice darkening) and eases up to AO_STRENGTH in
+    // useFrame once the occlusion bake has finished.
+    uAOStrength: { value: 0 },
+    uAODarkBelow: { value: AO_DARK_BELOW },
+    uAOLightAbove: { value: AO_LIGHT_ABOVE },
+    uDotColor: { value: new Color(DOT_COLOR) },
+    uHighlightColor: { value: new Color(HIGHLIGHT_COLOR) },
+    uDotSpacing: { value: DOT_SPACING },
+    uDotMinRadius: { value: DOT_MIN_RADIUS },
+    uDotMaxRadius: { value: DOT_MAX_RADIUS },
+    uDotMinOpacity: { value: DOT_MIN_OPACITY },
+    uDotMaxOpacity: { value: DOT_MAX_OPACITY },
+    uDotLightDark: { value: DOT_LIGHT_DARK },
+    uDotLightBright: { value: DOT_LIGHT_BRIGHT },
+    uDotHighlightGrow: { value: DOT_HIGHLIGHT_GROW },
+    uDotHighlightOpacity: { value: DOT_HIGHLIGHT_OPACITY },
+    uDotProjectionSharpness: { value: DOT_PROJECTION_SHARPNESS },
+  };
+}
+
 /**
- * Patches a MeshStandardMaterial (via onBeforeCompile, the standard
- * three.js hook for this) so it blends in `uHighlightColor` based on a
- * per-vertex weight -- itself the mix of two per-vertex attributes,
- * aHighlightFrom/aHighlightTo, driven by the shared uBlend uniform. Pure
- * albedo blend, no emissive -- the surface stays normally lit, just
- * tinted, so there's no glow.
+ * The invisible half of the dotted look. Drawn first (it's opaque, the
+ * dots are transparent, and three always draws opaque before
+ * transparent), it writes the body's depth but no color -- so the page
+ * background stays visible, yet anything behind the body's front surface
+ * (the back of the torso, the far arm, dots on the other side) fails the
+ * depth test and is hidden. That's what stops the dots looking x-rayed.
  *
- * uniforms is a plain object (not per-material state) shared by every
- * submesh's material, so animating uBlend.value once in useFrame updates
- * every submesh at once without needing a material reference per mesh.
- *
- * Also applies the baked crevice darkening (aOcclusion, see
- * bakeVertexOcclusion) to the FINAL lit color -- after every light has
- * been summed -- rather than through three's own aoMap, which only
- * darkens ambient/indirect light and would leave the directional lights
- * still shining into the nostrils.
+ * The polygon offset pushes its depth a hair further away, so the dots --
+ * drawn on the exact same triangles by a different shader program, which
+ * the GPU isn't required to rasterize to bit-identical depth -- always
+ * pass the depth test on top of it instead of flickering in and out.
  */
-function patchHighlightMaterial(
-  material: MeshStandardMaterial,
-  uniforms: {
-    uBlend: { value: number };
-    uHighlightColor: { value: Color };
-    uAOStrength: { value: number };
-  }
-) {
+function createOccluderMaterial(regionName: string): MeshBasicMaterial {
+  const material = new MeshBasicMaterial({
+    colorWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 2,
+  });
+  material.name = `${regionName}-occluder`;
+  material.userData.dotLook = true;
+  return material;
+}
+
+/**
+ * The visible half of the dotted look: a MeshStandardMaterial patched
+ * (via onBeforeCompile, the standard three.js hook) to throw away every
+ * pixel that isn't inside a dot.
+ *
+ * - The dot grid is laid out in the mesh's REST-POSE geometry (the raw
+ *   `position` attribute, before skinning), not on screen or in world
+ *   space -- so the dots are printed on the skin like a tattoo and move,
+ *   bend and stretch with it in every pose instead of sliding over it.
+ *   `dotSpace` maps this mesh's geometry into one shared reference space
+ *   (the first mesh's), so the grid lines up across material-slot seams.
+ * - The grid is projected from whichever axis the skin faces most (see
+ *   DOT_PROJECTION_SHARPNESS), with rows always horizontal.
+ * - The full lighting (every light, shadows, and the baked crevice
+ *   darkening, see bakeVertexOcclusion) is still computed, but only used
+ *   to size the dots: the darker the spot, the bigger and more opaque
+ *   its dot. The dots themselves are flat DOT_COLOR.
+ * - Inside the highlighted region (per-vertex weight, the mix of
+ *   aHighlightFrom/aHighlightTo driven by uBlend) the dots fade to
+ *   HIGHLIGHT_COLOR and grow a little.
+ * - Dot edges are anti-aliased from screen-space derivatives, and dots
+ *   squashed too small to draw cleanly (skin turning edge-on to the
+ *   camera) fade out instead of shimmering (moire).
+ */
+function createDotMaterial(
+  regionName: string,
+  uniforms: DotUniforms,
+  dotSpace: Matrix4
+): MeshStandardMaterial {
+  const material = new MeshStandardMaterial({
+    // Only feeds the lighting that sizes the dots; never shown.
+    color: "#fff",
+    roughness: 0.75,
+    metalness: 0,
+    transparent: true,
+    // The occluder already wrote the body's depth.
+    depthWrite: false,
+  });
+  material.name = regionName;
+  material.userData.dotLook = true;
+  const dotNormalSpace = new Matrix3().getNormalMatrix(dotSpace);
+
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.uBlend = uniforms.uBlend;
-    shader.uniforms.uHighlightColor = uniforms.uHighlightColor;
-    shader.uniforms.uAOStrength = uniforms.uAOStrength;
+    Object.assign(shader.uniforms, uniforms, {
+      uDotSpace: { value: dotSpace },
+      uDotNormalSpace: { value: dotNormalSpace },
+    });
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -684,44 +829,129 @@ function patchHighlightMaterial(
         attribute float aHighlightTo;
         attribute float aOcclusion;
         uniform float uBlend;
+        uniform mat4 uDotSpace;
+        uniform mat3 uDotNormalSpace;
         varying float vHighlight;
-        varying float vOcclusion;`
+        varying float vOcclusion;
+        varying vec3 vDotPos;
+        varying vec3 vDotNormal;`
       )
       .replace(
         "#include <begin_vertex>",
         `#include <begin_vertex>
-        vHighlight = mix(aHighlightFrom, aHighlightTo, uBlend);
-        vOcclusion = aOcclusion;`
+        vHighlight = mix( aHighlightFrom, aHighlightTo, uBlend );
+        vOcclusion = aOcclusion;
+        vDotPos = ( uDotSpace * vec4( position, 1.0 ) ).xyz;
+        vDotNormal = uDotNormalSpace * normal;`
       );
 
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
         `#include <common>
-        uniform vec3 uHighlightColor;
         uniform float uAOStrength;
+        uniform float uAODarkBelow;
+        uniform float uAOLightAbove;
+        uniform vec3 uDotColor;
+        uniform vec3 uHighlightColor;
+        uniform float uDotSpacing;
+        uniform float uDotMinRadius;
+        uniform float uDotMaxRadius;
+        uniform float uDotMinOpacity;
+        uniform float uDotMaxOpacity;
+        uniform float uDotLightDark;
+        uniform float uDotLightBright;
+        uniform float uDotHighlightGrow;
+        uniform float uDotHighlightOpacity;
+        uniform float uDotProjectionSharpness;
         varying float vHighlight;
-        varying float vOcclusion;`
-      )
-      .replace(
-        "vec4 diffuseColor = vec4( diffuse, opacity );",
-        `vec4 diffuseColor = vec4( mix( diffuse, uHighlightColor, vHighlight ), opacity );`
+        varying float vOcclusion;
+        varying vec3 vDotPos;
+        varying vec3 vDotNormal;
+
+        // Coverage (0..1) of one projected dot grid at p (the 2 projected
+        // coordinates, in geometry units). normalAB / normalK are the
+        // skin normal's components along those 2 axes / along the
+        // projection axis. radius is a fraction of the spacing.
+        float dotGridCoverage( vec2 p, vec2 normalAB, float normalK, float radius ) {
+          vec2 cell = p / uDotSpacing;
+          // How far one screen pixel moves in cell units, along screen x
+          // and y. Taken from the continuous cell coordinate -- never from
+          // the distance to the dot center, which jumps at every cell
+          // border and would draw faint grid lines between the dots.
+          vec2 cellPerPxX = dFdx( cell );
+          vec2 cellPerPxY = dFdy( cell );
+          // Distance to the dot center measured ON THE SKIN (its tangent
+          // plane), not in the flat projection: a projected grid stretches
+          // dots into dashes wherever the skin slopes away from the
+          // projection axis; adding back the depth the slope implies keeps
+          // every dot round.
+          vec2 slope = normalAB / max( abs( normalK ), 0.2 );
+          vec2 offset = fract( cell ) - 0.5;
+          vec3 onSkin = vec3( offset, dot( slope, offset ) );
+          float dist = length( onSkin );
+          // Exact width of one pixel across this dot's edge, in the same
+          // units -- also right for dots squashed into ellipses where the
+          // skin turns away from the camera, so edges stay crisp.
+          vec3 pxX = vec3( cellPerPxX, dot( slope, cellPerPxX ) );
+          vec3 pxY = vec3( cellPerPxY, dot( slope, cellPerPxY ) );
+          vec3 outward = onSkin / max( dist, 1e-6 );
+          float edge = 0.5 * max( length( vec2( dot( outward, pxX ), dot( outward, pxY ) ) ), 1e-6 );
+          float coverage = 1.0 - smoothstep( radius - edge, radius + edge, dist );
+          // Where dots get squashed under ~2-3 pixels apart (skin turning
+          // edge-on to the camera) they can't be drawn without shimmering:
+          // fade them out -- never into a solid tint, which would read as
+          // see-through skin.
+          float squash = max( length( pxX ), length( pxY ) );
+          coverage *= 1.0 - smoothstep( 0.3, 0.5, squash );
+          // A zero-radius dot must vanish completely (the anti-aliased
+          // edge would otherwise leave a faint speck at its center).
+          return coverage * smoothstep( 0.0, 0.04, radius );
+        }`
       )
       .replace(
         "#include <opaque_fragment>",
-        `float creviceOpen = smoothstep( ${AO_DARK_BELOW.toFixed(4)}, ${AO_LIGHT_ABOVE.toFixed(4)}, vOcclusion );
+        `float creviceOpen = smoothstep( uAODarkBelow, uAOLightAbove, vOcclusion );
         outgoingLight *= mix( 1.0, creviceOpen, clamp( uAOStrength, 0.0, 1.0 ) );
-        #include <opaque_fragment>`
+
+        // 1 = in shadow (biggest dots), 0 = fully lit (smallest).
+        float lightLevel = dot( outgoingLight, vec3( 0.2126, 0.7152, 0.0722 ) );
+        float shade = 1.0 - smoothstep( uDotLightDark, uDotLightBright, lightLevel );
+        float highlight = clamp( vHighlight, 0.0, 1.0 );
+
+        float dotRadius = mix( uDotMinRadius, uDotMaxRadius, shade );
+        dotRadius *= mix( 1.0, uDotHighlightGrow, highlight );
+        // Past 0.5 a dot would be clipped square by its cell border.
+        dotRadius = clamp( dotRadius, 0.0, 0.48 );
+        float dotOpacity = mix( uDotMinOpacity, uDotMaxOpacity, shade );
+        dotOpacity = mix( dotOpacity, max( dotOpacity, uDotHighlightOpacity ), highlight );
+
+        // Front/back faces use (x, y), sides (z, y), top/bottom (x, z):
+        // rows stay horizontal everywhere but the top/bottom. Where the
+        // skin turns from one to another, each grid's dots shrink away
+        // toward the switch (instead of the two grids cross-fading into
+        // overlapping ghost dots), leaving one tidy crease of small dots.
+        vec3 skinNormal = normalize( vDotNormal );
+        vec3 facing = pow( abs( skinNormal ), vec3( uDotProjectionSharpness ) );
+        facing /= max( facing.x + facing.y + facing.z, 1e-6 );
+        vec3 gridRadius = dotRadius * smoothstep( vec3( 0.4 ), vec3( 0.75 ), facing );
+        float coverX = dotGridCoverage( vDotPos.zy, skinNormal.zy, skinNormal.x, gridRadius.x );
+        float coverY = dotGridCoverage( vDotPos.xz, skinNormal.xz, skinNormal.y, gridRadius.y );
+        float coverZ = dotGridCoverage( vDotPos.xy, skinNormal.xy, skinNormal.z, gridRadius.z );
+        float coverage = 1.0 - ( 1.0 - coverX ) * ( 1.0 - coverY ) * ( 1.0 - coverZ );
+
+        float dotAlpha = clamp( coverage * clamp( dotOpacity, 0.0, 1.0 ), 0.0, 1.0 );
+        // Everything between the dots: let the page show through.
+        if ( dotAlpha < 0.004 ) discard;
+        gl_FragColor = vec4( mix( uDotColor, uHighlightColor, highlight ), dotAlpha );`
       );
   };
-  // Materials with different onBeforeCompile closures can end up sharing
-  // a cached program if three thinks they're equivalent; keying by name
-  // (which differs per Blender material slot) keeps each submesh's
-  // program distinct and avoids stale-uniform cross-talk between slots.
-  // (The AO thresholds are baked into the shader source, so they're part
-  // of the key too -- otherwise editing them wouldn't recompile.)
-  material.customProgramCacheKey = () =>
-    `highlight-${material.name}-${AO_DARK_BELOW}-${AO_LIGHT_ABOVE}`;
+  // Every dot material compiles to identical shader source (all the
+  // tunables are uniforms), so they can share one GPU program; each
+  // material still gets its own uniforms (uDotSpace) from its own
+  // onBeforeCompile. Bump the suffix if the shader code above changes.
+  material.customProgramCacheKey = () => "dots-v3";
+  return material;
 }
 
 /**
@@ -782,33 +1012,26 @@ function PosableModel({
     new Map()
   );
 
-  // Shared by every submesh's patched material (see patchHighlightMaterial)
-  // so animating uBlend once in useFrame updates the whole model at once.
-  // uAOStrength starts at 0 (no crevice darkening) and eases up to
-  // AO_STRENGTH in useFrame once the occlusion bake has finished.
-  const [highlightUniforms] = useState(() => ({
-    uBlend: { value: 0 },
-    uHighlightColor: { value: new Color(HIGHLIGHT_COLOR) },
-    uAOStrength: { value: 0 },
-  }));
+  // Shared by every mesh's dot material (see createDotMaterial) so
+  // animating uBlend / uAOStrength once in useFrame updates the whole
+  // model at once.
+  const [dotUniforms] = useState(createDotUniforms);
   // Target for uAOStrength -- flipped to AO_STRENGTH when the bake lands.
   const aoTargetStrength = useRef(0);
 
-  // female-rigged-nomeshsculpt3-best.glb currently ships with no real texture on any of its
-  // material slots (verified when inspecting the file), which would
-  // otherwise render as flat default gray. This replaces every sub-mesh's
-  // material with the same placeholder white -- but keeps each material's
-  // ORIGINAL NAME (the Blender slot name, e.g. "heart"/"head"/"hands") so
-  // the highlight system can still find the right region by name even
-  // after the material object itself has been swapped out. Remove this
-  // block (or make it conditional per-region) once real materials/textures
-  // are baked into the GLB in Blender.
+  // Swaps every mesh's material for the dotted look: an invisible
+  // depth-only occluder plus the dot material on top (see
+  // createOccluderMaterial / createDotMaterial). Both draw the same
+  // triangles of the same skinned mesh -- via two geometry groups covering
+  // the whole mesh, one per material -- so they share one skeleton and
+  // can never drift apart in any pose. Each dot material keeps the
+  // ORIGINAL Blender slot name (e.g. "femaleheart") as its name.
   //
   // This same effect also computes the smooth per-vertex highlight fields
   // (buildVertexHighlightFields) and attaches the aHighlightFrom/
-  // aHighlightTo attributes every submesh's patched material reads from --
-  // both are one-time, geometry-driven setup, so they belong together and
-  // both key off [scene] only (not [view]).
+  // aHighlightTo attributes every dot material reads from -- both are
+  // one-time, geometry-driven setup, so they belong together and both key
+  // off [scene] only (not [view]).
   useEffect(() => {
     const regionNames = Array.from(
       new Set(
@@ -824,39 +1047,56 @@ function PosableModel({
     );
     highlightFieldsRef.current = fields;
 
+    const meshes: Mesh[] = [];
     scene.traverse((obj) => {
       const mesh = obj as Mesh;
-      if (!mesh.isMesh) return;
+      if (mesh.isMesh) meshes.push(mesh);
+    });
 
-      const mat = mesh.material as MeshStandardMaterial | undefined;
-      const regionName = mat?.name ?? "";
-      // Only fall back to the flat placeholder color if this mesh truly
-      // has no material or no texture map baked in. If the GLB already
-      // ships a textured material, leave it alone.
-      const hasTexture = !!mat && "map" in mat && !!mat.map;
+    // One shared space for the dot grid, so it lines up across every
+    // mesh: the first mesh's own geometry space (same reasoning as in
+    // bakeVertexOcclusion -- y is up, ~4.43 units tall, which is what
+    // DOT_SPACING is measured in).
+    scene.updateMatrixWorld(true);
+    const referenceInverse = meshes.length
+      ? new Matrix4().copy(meshes[0].matrixWorld).invert()
+      : new Matrix4();
 
-      let finalMat = mat;
-      if (!mat || !hasTexture) {
-        finalMat = new MeshStandardMaterial({
-          color: "#fff",
-          roughness: 0.75,
-          metalness: 0,
-        });
-        finalMat.name = regionName;
-        mesh.material = finalMat;
+    for (const mesh of meshes) {
+      const { geometry } = mesh;
+      const regionName = getRegionName(mesh);
+
+      // Re-running on the same cached scene (StrictMode, hot reload,
+      // remount): free the pair a previous run created. The GLB's own
+      // original materials are left alone.
+      const previous = mesh.material;
+      for (const old of Array.isArray(previous) ? previous : [previous]) {
+        if (old?.userData.dotLook) old.dispose();
       }
 
-      if (finalMat) {
-        patchHighlightMaterial(finalMat, highlightUniforms);
-      }
+      const dotSpace = new Matrix4().multiplyMatrices(
+        referenceInverse,
+        mesh.matrixWorld
+      );
+      // Group 0 = occluder, group 1 = dots, each covering every triangle.
+      const drawCount = geometry.index
+        ? geometry.index.count
+        : geometry.attributes.position.count;
+      geometry.clearGroups();
+      geometry.addGroup(0, drawCount, 0);
+      geometry.addGroup(0, drawCount, 1);
+      mesh.material = [
+        createOccluderMaterial(regionName),
+        createDotMaterial(regionName, dotUniforms, dotSpace),
+      ];
 
-      // <Canvas shadows> + castShadow on a light only enable shadow maps;
-      // each mesh still has to opt in, or the body never shadows itself
-      // (nose onto upper lip, chin onto neck, arms onto torso).
+      // castShadow: the body still shadows itself (nose onto upper lip,
+      // chin onto neck, arms onto torso), which makes those dots bigger.
+      // receiveShadow: the dot material's lighting includes those shadows.
       mesh.castShadow = true;
       mesh.receiveShadow = true;
 
-      const vertCount = mesh.geometry.attributes.position.count;
+      const vertCount = geometry.attributes.position.count;
       mesh.geometry.setAttribute(
         "aHighlightFrom",
         new BufferAttribute(new Float32Array(vertCount), 1)
@@ -874,8 +1114,8 @@ function PosableModel({
           new BufferAttribute(new Float32Array(vertCount).fill(1), 1)
         );
       }
-    });
-  }, [scene, highlightUniforms]);
+    }
+  }, [scene, dotUniforms]);
 
   // Bake the crevice darkening (see bakeVertexOcclusion) a few
   // milliseconds per frame so the page stays responsive while it runs,
@@ -929,16 +1169,18 @@ function PosableModel({
     activeActionName.current = targetName;
   }, [view, actions, names, modelPath]);
 
-  // Re-target the color gradient toward whichever region matches the
-  // active view. Rather than snapping instantly, this freezes wherever
-  // the PREVIOUS blend had actually gotten to (in case a rapid click
-  // interrupted an in-progress fade) as the new starting point, then lets
-  // useFrame below ease uBlend from 0 back to 1 -- same "no stuck
-  // mid-transition" reasoning as the pose blending above, just for color.
+  // Re-target the dot color toward whichever region matches the active
+  // view: that region's dots fade to HIGHLIGHT_COLOR while the previous
+  // region's fade back to DOT_COLOR, at the same time. Rather than
+  // snapping instantly, this freezes wherever the PREVIOUS blend had
+  // actually gotten to (in case a rapid click interrupted an in-progress
+  // fade) as the new starting point, then lets useFrame below ease uBlend
+  // from 0 back to 1 -- same "no stuck mid-transition" reasoning as the
+  // pose blending above, just for color.
   useEffect(() => {
     const activeRegion = HIGHLIGHT_REGION_NAMES[view];
     const fieldsByMesh = highlightFieldsRef.current;
-    const blendSoFar = highlightUniforms.uBlend.value;
+    const blendSoFar = dotUniforms.uBlend.value;
 
     let warnedMissingRegion = false;
 
@@ -980,8 +1222,8 @@ function PosableModel({
       toAttr.needsUpdate = true;
     });
 
-    highlightUniforms.uBlend.value = 0;
-  }, [view, scene, modelPath, highlightUniforms]);
+    dotUniforms.uBlend.value = 0;
+  }, [view, scene, modelPath, dotUniforms]);
 
   useFrame((_state, delta) => {
     const activeName = activeActionName.current;
@@ -1023,18 +1265,18 @@ function PosableModel({
       }
     }
 
-    // Ease the color gradient's blend scalar from 0 toward 1 every frame.
-    // Updating this one uniform is all it takes to animate every
-    // submesh's color at once, since they all share the same uniforms
-    // object (see highlightUniforms / patchHighlightMaterial).
+    // Ease the dot-color blend scalar from 0 toward 1 every frame.
+    // Updating this one uniform is all it takes to fade every mesh's dots
+    // at once, since they all share the same uniforms object (see
+    // dotUniforms / createDotMaterial).
     const hk = 1 - Math.exp(-delta * HIGHLIGHT_FADE_SPEED);
-    highlightUniforms.uBlend.value += (1 - highlightUniforms.uBlend.value) * hk;
+    dotUniforms.uBlend.value += (1 - dotUniforms.uBlend.value) * hk;
 
     // Same easing for the crevice darkening, from 0 up to AO_STRENGTH
     // once the bake has landed (see aoTargetStrength).
     const ak = 1 - Math.exp(-delta * AO_FADE_SPEED);
-    highlightUniforms.uAOStrength.value +=
-      (aoTargetStrength.current - highlightUniforms.uAOStrength.value) * ak;
+    dotUniforms.uAOStrength.value +=
+      (aoTargetStrength.current - dotUniforms.uAOStrength.value) * ak;
   });
 
   return (
