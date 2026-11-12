@@ -150,56 +150,56 @@ const healthDataByView: Record<ViewKey, HealthPanelData> = {
     ],
   },
 
-//   thighs: {
-//   summary: {
-//     title: "Thigh Health",
-//     description:
-//       "Lower-body strength, mobility, and muscle balance are within a healthy range. Overall thigh function supports good movement, stability, and physical performance.",
-//     score: 82,
-//   },
-//   metrics: [
-//     { title: "Muscle Strength", value: "86", unit: "/100", status: "Optimal", statusColor: "green" },
-//     { title: "Muscle Mass", value: "14.8", unit: "kg", status: "Optimal", statusColor: "green" },
-//     { title: "Flexibility", value: "91", unit: "%", status: "Optimal", statusColor: "green" },
-//     { title: "Left-Right Balance", value: "96", unit: "%", status: "Optimal", statusColor: "green" },
-//     { title: "Joint Stability", value: "88", unit: "/100", status: "Optimal", statusColor: "green" },
-//     { title: "Recovery Time", value: "20", unit: "hrs", status: "Normal", statusColor: "green" },
-//   ],
-// },
+  thighs: {
+  summary: {
+    title: "Thigh Health",
+    description:
+      "Lower-body strength, mobility, and muscle balance are within a healthy range. Overall thigh function supports good movement, stability, and physical performance.",
+    score: 82,
+  },
+  metrics: [
+    { title: "Muscle Strength", value: "86", unit: "/100", status: "Optimal", statusColor: "green" },
+    { title: "Muscle Mass", value: "14.8", unit: "kg", status: "Optimal", statusColor: "green" },
+    { title: "Flexibility", value: "91", unit: "%", status: "Optimal", statusColor: "green" },
+    { title: "Left-Right Balance", value: "96", unit: "%", status: "Optimal", statusColor: "green" },
+    { title: "Joint Stability", value: "88", unit: "/100", status: "Optimal", statusColor: "green" },
+    { title: "Recovery Time", value: "20", unit: "hrs", status: "Normal", statusColor: "green" },
+  ],
+},
 
-// genitals: {
-//   summary: {
-//     title: "Reproductive Health",
-//     description:
-//       "Reproductive health indicators are within a healthy range. Current measurements suggest normal function with no significant concerns across the available markers.",
-//     score: 87,
-//   },
-//   metrics: [
-//     { title: "Hormonal Balance", value: "91", unit: "/100", status: "Optimal", statusColor: "green" },
-//     { title: "Circulation", value: "88", unit: "/100", status: "Optimal", statusColor: "green" },
-//     { title: "Testosterone", value: "620", unit: "ng/dL", status: "Optimal", statusColor: "green" },
-//     { title: "Fertility Index", value: "84", unit: "/100", status: "Normal", statusColor: "yellow" },
-//     { title: "Pelvic Health", value: "93", unit: "/100", status: "Optimal", statusColor: "green" },
-//     { title: "Inflammation", value: "Low", unit: "", status: "Optimal", statusColor: "green" },
-//   ],
-// },
+genitals: {
+  summary: {
+    title: "Reproductive Health",
+    description:
+      "Reproductive health indicators are within a healthy range. Current measurements suggest normal function with no significant concerns across the available markers.",
+    score: 87,
+  },
+  metrics: [
+    { title: "Hormonal Balance", value: "91", unit: "/100", status: "Optimal", statusColor: "green" },
+    { title: "Circulation", value: "88", unit: "/100", status: "Optimal", statusColor: "green" },
+    { title: "Testosterone", value: "620", unit: "ng/dL", status: "Optimal", statusColor: "green" },
+    { title: "Fertility Index", value: "84", unit: "/100", status: "Normal", statusColor: "yellow" },
+    { title: "Pelvic Health", value: "93", unit: "/100", status: "Optimal", statusColor: "green" },
+    { title: "Inflammation", value: "Low", unit: "", status: "Optimal", statusColor: "green" },
+  ],
+},
 
-// calves: {
-//   summary: {
-//     title: "Calf Health",
-//     description:
-//       "Calf strength, circulation, and mobility are within a healthy range. Muscle condition and lower-leg function indicate good support for walking, balance, and physical activity.",
-//     score: 85,
-//   },
-//   metrics: [
-//     { title: "Muscle Strength", value: "89", unit: "/100", status: "Optimal", statusColor: "green" },
-//     { title: "Muscle Mass", value: "5.8", unit: "kg", status: "Optimal", statusColor: "green" },
-//     { title: "Circulation", value: "94", unit: "/100", status: "Optimal", statusColor: "green" },
-//     { title: "Flexibility", value: "87", unit: "%", status: "Normal", statusColor: "yellow" },
-//     { title: "Left-Right Balance", value: "97", unit: "%", status: "Optimal", statusColor: "green" },
-//     { title: "Recovery Time", value: "16", unit: "hrs", status: "Optimal", statusColor: "green" },
-//   ],
-// },
+calves: {
+  summary: {
+    title: "Calf Health",
+    description:
+      "Calf strength, circulation, and mobility are within a healthy range. Muscle condition and lower-leg function indicate good support for walking, balance, and physical activity.",
+    score: 85,
+  },
+  metrics: [
+    { title: "Muscle Strength", value: "89", unit: "/100", status: "Optimal", statusColor: "green" },
+    { title: "Muscle Mass", value: "5.8", unit: "kg", status: "Optimal", statusColor: "green" },
+    { title: "Circulation", value: "94", unit: "/100", status: "Optimal", statusColor: "green" },
+    { title: "Flexibility", value: "87", unit: "%", status: "Normal", statusColor: "yellow" },
+    { title: "Left-Right Balance", value: "97", unit: "%", status: "Optimal", statusColor: "green" },
+    { title: "Recovery Time", value: "16", unit: "hrs", status: "Optimal", statusColor: "green" },
+  ],
+},
 
 
 };

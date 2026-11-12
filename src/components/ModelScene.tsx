@@ -1,12 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useGLTF, ContactShadows, useAnimations } from "@react-three/drei";
 import {
   Bone,
   BufferAttribute,
-  BufferGeometry,
   Color,
   DepthTexture,
   DoubleSide,
@@ -22,18 +21,25 @@ import {
   NeutralToneMapping,
   OrthographicCamera,
   PerspectiveCamera,
-  Ray,
   ShaderMaterial,
   SkinnedMesh,
   Texture,
-  Triangle,
   UniformsLib,
   UniformsUtils,
   Vector2,
   Vector3,
   WebGLRenderTarget,
 } from "three";
-import { MeshBVH } from "three-mesh-bvh";
+import {
+  dotBakeKey,
+  runDotBake,
+  type BakeSurface,
+  type DotBakeTask,
+  type DotPlacementParams,
+  type OcclusionParams,
+  type PlacedDots,
+} from "./dotBake";
+import { loadDotBake, saveDotBake } from "./dotBakeCache";
 
 export type ViewKey =
   | "reset"
@@ -43,12 +49,15 @@ export type ViewKey =
   | "kidney"
   | "thyroid"
   | "liver"
-  | "lungs";
+  | "lungs"
+  | "thighs"
+  | "genitals"
+  | "calves";
 type Vector3Tuple = [number, number, number];
 
 // Male rigged/posable model. (Gender swap removed -- this is the only model
 // the scene renders now.)
-const MODEL_PATH = "/female-rigged-nomeshsculpt3-meshedited.glb";
+const MODEL_PATH = "/female-rigged-nomeshsculpt3-meshedited-thigh.glb";
 
 const VIEWS: Record<
   ViewKey,
@@ -62,6 +71,9 @@ const VIEWS: Record<
   thyroid: { label: "Thyroid",  camPos: [0.25, 1.15, 0.7], target: [0, 1.40, 0] },
   liver: { label: "Liver", camPos: [-0.45, 1.25, 0.6], target: [0, 1.18, 0] },
   lungs: { label: "Lungs", camPos: [-0, 1.35, 0.9], target: [0, 1.28, 0] },
+  thighs: { label: "Thighs", camPos: [-0, 0.65, 1.25], target: [0, 0.75, 0] },
+  genitals: { label: "Genitals", camPos: [-0, 1.2, 1.25], target: [0, .85, 0] },
+  calves: { label: "Calves", camPos: [-0, 0.45, -1.25], target: [0, 0.38, 0] },
 
 };
 
@@ -79,6 +91,9 @@ const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   thyroid:"head2",
   liver: "default",
   lungs:"default",
+  thighs:"default",
+  genitals:"default",
+  calves:"default"
 
   
 };
@@ -88,7 +103,7 @@ const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
 // active. This is a separate mapping from POSE_ACTION_NAMES above on
 // purpose -- the pose clip for the arms button is named "arm" (singular),
 // but the material slot covering that same area is named "hands" (see
-// female-rigged-nomeshsculpt3-meshedited.glb's material list). "reset" has no highlighted region
+// female-rigged-nomeshsculpt3-meshedited-thigh.glb's material list). "reset" has no highlighted region
 // at all -- clicking it turns every highlight off.
 const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
@@ -99,6 +114,9 @@ const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   thyroid:"femalethyroid",
   liver: "femaleliver",
   lungs:"femalelungs",
+  thighs:"femalethighs",
+  genitals:"femalegenitals",
+  calves: "femalecalves"
   
 };
 
@@ -176,6 +194,9 @@ const HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
   femaleliver: 0.15,
   femalebrainfinal: 0.25,
   femalelungs: 0.15,
+  femalethighs: 0.15,
+  femalegenitals:0.15,
+  femalecalves:0.15
 
 };
 
@@ -507,9 +528,9 @@ function buildVertexHighlightFields(
 // Computed once on load by casting short rays from each vertex out over
 // the hemisphere around its normal (through a BVH so it stays fast), in
 // the GLB's rest pose -- like the highlight fields, it doesn't need
-// recomputing per pose. Measured at ~1.2s total for the ~17k-vertex
-// female model at 16 rays, so it's spread across frames (see
-// AO_BAKE_BUDGET_MS) instead of freezing the page, and fades in when done.
+// recomputing per pose. It runs in a background worker alongside the dot
+// placement (see dotBake.ts), is saved in the browser for return visits
+// (see dotBakeCache.ts), and fades in when done.
 // ---------------------------------------------------------------------
 
 // Rays per vertex. 16 + the smoothing pass below gave the same darkness
@@ -540,8 +561,6 @@ const AO_LIGHT_ABOVE = 1.3;
 // Fade-in speed once the bake finishes, same exponential-decay idiom as
 // HIGHLIGHT_FADE_SPEED.
 const AO_FADE_SPEED = 3;
-// Max milliseconds of bake work per animation frame.
-const AO_BAKE_BUDGET_MS = 8;
 
 /**
  * The body's own (source) meshes: every mesh in the GLB scene, but never
@@ -559,9 +578,9 @@ function collectBodyMeshes(scene: Group): Mesh[] {
 }
 
 /**
- * Every body mesh merged into one triangle soup with a BVH over it, in
- * one shared space -- used both to bake the crevice darkening and to
- * place the dots, so a ray can hit (or be blocked by) any material slot.
+ * Every body mesh merged into one triangle soup, in one shared space --
+ * the input to both the crevice-darkening bake and the dot placement (see
+ * dotBake.ts), so a ray can hit (or be blocked by) any material slot.
  *
  * The shared space is the FIRST mesh's own geometry space, NOT the
  * scene's: the body is skinned under an "Armature" node scaled ~0.026,
@@ -584,8 +603,6 @@ interface MergedSurface {
   index: Uint32Array;
   vertTotal: number;
   indexTotal: number;
-  geometry: BufferGeometry;
-  bvh: MeshBVH;
 }
 
 /**
@@ -595,10 +612,21 @@ interface MergedSurface {
  * Armature's 0.026 scale) -- so this, not matrixWorld, is its real space.
  */
 function boneSkinningMatrix(mesh: SkinnedMesh, boneIndex: number, target: Matrix4): Matrix4 {
+  const bone = mesh.skeleton.bones[boneIndex];
+  if (mesh.bindMode === "attached") {
+    // Drawn as matrixWorld * bindMatrixInverse * bone * boneInverse *
+    // bindMatrix, where three keeps bindMatrixInverse = matrixWorld^-1 --
+    // but only refreshes it while drawing a frame, so it can be stale
+    // before the first one. The first two cancel, so skip them.
+    return target
+      .copy(bone.matrixWorld)
+      .multiply(mesh.skeleton.boneInverses[boneIndex])
+      .multiply(mesh.bindMatrix);
+  }
   return target
     .copy(mesh.matrixWorld)
     .multiply(mesh.bindMatrixInverse)
-    .multiply(mesh.skeleton.bones[boneIndex].matrixWorld)
+    .multiply(bone.matrixWorld)
     .multiply(mesh.skeleton.boneInverses[boneIndex])
     .multiply(mesh.bindMatrix);
 }
@@ -684,12 +712,6 @@ function buildMergedSurface(meshes: Mesh[]): MergedSurface {
     indexOffset += count;
   });
 
-  const geometry = new BufferGeometry();
-  geometry.setAttribute("position", new BufferAttribute(positions, 3));
-  // MeshBVH reorders this index's triangles in place -- fine, since every
-  // user only needs "which triangles exist", never their original order.
-  geometry.setIndex(new BufferAttribute(index, 1));
-  const bvh = new MeshBVH(geometry);
   return {
     meshes,
     vertOffsets,
@@ -700,134 +722,7 @@ function buildMergedSurface(meshes: Mesh[]): MergedSurface {
     index,
     vertTotal,
     indexTotal,
-    geometry,
-    bvh,
   };
-}
-
-/**
- * Generator so the caller can run it a slice at a time (it yields every
- * few dozen vertices). Returns a Map from mesh.uuid to one 0..1 openness
- * value per vertex, in that mesh's own vertex order -- same shape as the
- * highlight fields.
- */
-function* bakeVertexOcclusion(
-  surface: MergedSurface
-): Generator<void, Map<string, Float32Array>, void> {
-  const { meshes, positions, normals, index, vertTotal, indexTotal, bvh } = surface;
-
-  // Cosine-weighted directions over the +Z hemisphere (golden-angle
-  // spiral), so every hit counts equally and grazing rays matter least --
-  // the same weighting diffuse light itself has.
-  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-  const samples: Vector3Tuple[] = [];
-  for (let s = 0; s < AO_RAY_COUNT; s++) {
-    const u = (s + 0.5) / AO_RAY_COUNT;
-    const r = Math.sqrt(u);
-    samples.push([r * Math.cos(s * goldenAngle), r * Math.sin(s * goldenAngle), Math.sqrt(1 - u)]);
-  }
-
-  const ray = new Ray();
-  const openness = new Float32Array(vertTotal);
-  for (let i = 0; i < vertTotal; i++) {
-    const px = positions[i * 3];
-    const py = positions[i * 3 + 1];
-    const pz = positions[i * 3 + 2];
-    const nx = normals[i * 3];
-    const ny = normals[i * 3 + 1];
-    const nz = normals[i * 3 + 2];
-
-    // Tangent (t) / bitangent (b) around the normal, branch-free
-    // (Duff et al. 2017) -- turns the +Z samples into this vertex's
-    // hemisphere.
-    const sign = nz >= 0 ? 1 : -1;
-    const a = -1 / (sign + nz);
-    const b = nx * ny * a;
-    const tx = 1 + sign * nx * nx * a, ty = sign * b, tz = -sign * nx;
-    const bx = b, by = sign + ny * ny * a, bz = -ny;
-
-    // Spin the sample pattern per vertex to avoid banding. Hashed from
-    // the POSITION (not the index) so the duplicate vertices Blender
-    // splits along UV/material seams get identical results -- otherwise
-    // the seams would show as faint lines.
-    const h = Math.sin(px * 12.9898 + py * 78.233 + pz * 37.719) * 43758.5453;
-    const spin = (h - Math.floor(h)) * Math.PI * 2;
-    const cos = Math.cos(spin);
-    const sin = Math.sin(spin);
-
-    let occluded = 0;
-    for (const [sx0, sy0, sz] of samples) {
-      const sx = sx0 * cos - sy0 * sin;
-      const sy = sx0 * sin + sy0 * cos;
-      ray.origin.set(px + nx * AO_RAY_BIAS, py + ny * AO_RAY_BIAS, pz + nz * AO_RAY_BIAS);
-      ray.direction.set(
-        tx * sx + bx * sy + nx * sz,
-        ty * sx + by * sy + ny * sz,
-        tz * sx + bz * sy + nz * sz
-      );
-      const hit = bvh.raycastFirst(ray, DoubleSide, 0, AO_RAY_DISTANCE);
-      // Closer blockers occlude more -- softens the edge of each cavity.
-      if (hit) occluded += 1 - hit.distance / AO_RAY_DISTANCE;
-    }
-    openness[i] = 1 - occluded / AO_RAY_COUNT;
-
-    if ((i & 31) === 31) yield;
-  }
-
-  // One smoothing pass over the triangle mesh to wash out sampling noise,
-  // done on welded vertices (same quantized position = same vertex) so
-  // seam duplicates stay identical.
-  const weldIds = new Int32Array(vertTotal);
-  const weldKeys = new Map<string, number>();
-  for (let i = 0; i < vertTotal; i++) {
-    const key = `${Math.round(positions[i * 3] * 1e4)},${Math.round(positions[i * 3 + 1] * 1e4)},${Math.round(positions[i * 3 + 2] * 1e4)}`;
-    let id = weldKeys.get(key);
-    if (id === undefined) {
-      id = weldKeys.size;
-      weldKeys.set(key, id);
-    }
-    weldIds[i] = id;
-  }
-  const weldCount = weldKeys.size;
-  const own = new Float32Array(weldCount);
-  const ownCount = new Float32Array(weldCount);
-  for (let i = 0; i < vertTotal; i++) {
-    own[weldIds[i]] += openness[i];
-    ownCount[weldIds[i]] += 1;
-  }
-  for (let w = 0; w < weldCount; w++) own[w] /= ownCount[w];
-
-  const neighborSum = new Float32Array(weldCount);
-  const neighborCount = new Float32Array(weldCount);
-  for (let t = 0; t < indexTotal; t += 3) {
-    const ia = weldIds[index[t]];
-    const ib = weldIds[index[t + 1]];
-    const ic = weldIds[index[t + 2]];
-    neighborSum[ia] += own[ib] + own[ic];
-    neighborSum[ib] += own[ia] + own[ic];
-    neighborSum[ic] += own[ia] + own[ib];
-    neighborCount[ia] += 2;
-    neighborCount[ib] += 2;
-    neighborCount[ic] += 2;
-  }
-  // Each vertex keeps a bit more of its own value than any one neighbor.
-  const SELF_WEIGHT = 4;
-  const smoothed = new Float32Array(weldCount);
-  for (let w = 0; w < weldCount; w++) {
-    smoothed[w] =
-      (own[w] * SELF_WEIGHT + neighborSum[w]) / (SELF_WEIGHT + neighborCount[w]);
-  }
-
-  const result = new Map<string, Float32Array>();
-  let offset = 0;
-  for (const mesh of meshes) {
-    const count = mesh.geometry.attributes.position.count;
-    const values = new Float32Array(count);
-    for (let i = 0; i < count; i++) values[i] = smoothed[weldIds[offset + i]];
-    result.set(mesh.uuid, values);
-    offset += count;
-  }
-  return result;
 }
 
 // ---------------------------------------------------------------------
@@ -837,15 +732,6 @@ function* bakeVertexOcclusion(
 // always faces the screen -- never tilted with the skin -- sized by how
 // brightly that spot is lit. Dots at the silhouette simply overhang it.
 // ---------------------------------------------------------------------
-
-// For each projection axis (X = sides, Y = top/bottom, Z = front/back):
-// the two axes its grid runs along, rows (second) always being the
-// vertical one where possible.
-const DOT_GRID_AXES: [number, number][] = [
-  [2, 1],
-  [0, 2],
-  [0, 1],
-];
 
 // Sealed-cavity culling. Patching a hole (mouth, nostrils, eyes) with a
 // cap mesh leaves the old inner surfaces behind it, and the grid rays
@@ -881,61 +767,24 @@ const DOT_SEAM_BAND = 1.7;
 // that much (capped here), so slanted skin looks as full as the rest.
 const DOT_SPREAD_MAX = 1.8;
 
-// Uniform directions over the +Z hemisphere, the most upright first, so
-// open skin escapes on the first couple of tries.
-const DOT_ESCAPE_SAMPLES: Vector3Tuple[] = (() => {
-  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-  const samples: Vector3Tuple[] = [];
-  for (let s = 0; s < DOT_ESCAPE_RAY_COUNT; s++) {
-    const z = 1 - (s + 0.5) / DOT_ESCAPE_RAY_COUNT;
-    const r = Math.sqrt(1 - z * z);
-    samples.push([r * Math.cos(s * goldenAngle), r * Math.sin(s * goldenAngle), z]);
-  }
-  return samples;
-})();
-
-/**
- * Can the surface point p (normal n, unit length) see out of the model?
- * Returns how many rays it took (negative when it can't), so the caller
- * can account for the work when time-slicing.
- */
-function surfaceEscapes(
-  bvh: MeshBVH,
-  ray: Ray,
-  px: number,
-  py: number,
-  pz: number,
-  nx0: number,
-  ny0: number,
-  nz0: number
-): number {
-  let escaped = 0;
-  let fired = 0;
-  for (const side of [1, -1]) {
-    const nx = nx0 * side;
-    const ny = ny0 * side;
-    const nz = nz0 * side;
-    // Tangent frame around n, as in bakeVertexOcclusion.
-    const sign = nz >= 0 ? 1 : -1;
-    const a = -1 / (sign + nz);
-    const b = nx * ny * a;
-    const tx = 1 + sign * nx * nx * a, ty = sign * b, tz = -sign * nx;
-    const bx = b, by = sign + ny * ny * a, bz = -ny;
-    for (const [sx, sy, sz] of DOT_ESCAPE_SAMPLES) {
-      ray.origin.set(px + nx * AO_RAY_BIAS, py + ny * AO_RAY_BIAS, pz + nz * AO_RAY_BIAS);
-      ray.direction.set(
-        tx * sx + bx * sy + nx * sz,
-        ty * sx + by * sy + ny * sz,
-        tz * sx + bz * sy + nz * sz
-      );
-      fired++;
-      if (!bvh.raycastFirst(ray, DoubleSide) && ++escaped >= DOT_ESCAPE_RAYS_NEEDED) {
-        return fired;
-      }
-    }
-  }
-  return -fired;
-}
+// All the knobs above, as handed to the background bake (dotBake.ts).
+// Changing any of them also changes the saved-result key, so the next
+// load recomputes instead of reusing an old bake.
+const DOT_PLACEMENT_PARAMS: DotPlacementParams = {
+  spacing: DOT_SPACING,
+  seamOverlap: DOT_SEAM_OVERLAP,
+  minGap: DOT_MIN_GAP,
+  seamBand: DOT_SEAM_BAND,
+  spreadMax: DOT_SPREAD_MAX,
+  escapeRayCount: DOT_ESCAPE_RAY_COUNT,
+  escapeRaysNeeded: DOT_ESCAPE_RAYS_NEEDED,
+  rayBias: AO_RAY_BIAS,
+};
+const OCCLUSION_PARAMS: OcclusionParams = {
+  rayCount: AO_RAY_COUNT,
+  rayDistance: AO_RAY_DISTANCE,
+  rayBias: AO_RAY_BIAS,
+};
 
 /** The dots pinned to one body mesh, all in that mesh's own geometry space. */
 interface DotCloudData {
@@ -961,313 +810,54 @@ interface DotCloudData {
   referenceToMeshScale: number;
 }
 
-/**
- * Pins dots to the skin on a regular grid: rays are cast straight through
- * the body along each axis, one per grid cell (DOT_SPACING apart), and
- * every surface a ray crosses gets a dot -- but only if that surface faces
- * the ray's axis more than the other two, so each patch of skin is dotted
- * by exactly one grid. Front/back and sides give horizontal rows.
- *
- * Generator so the caller can run it a slice at a time.
- */
-function* placeSurfaceDots(
-  surface: MergedSurface
-): Generator<void, DotCloudData[], void> {
-  const { meshes, positions, normals, vertexMesh, vertOffsets, vertTotal, bvh } =
-    surface;
+/** The merged surface as the background bake needs it (plain arrays only). */
+function toBakeSurface(surface: MergedSurface): BakeSurface {
+  return {
+    positions: surface.positions,
+    normals: surface.normals,
+    index: surface.index,
+    vertexMesh: surface.vertexMesh,
+    vertOffsets: surface.vertOffsets,
+  };
+}
 
-  const min = [Infinity, Infinity, Infinity];
-  const max = [-Infinity, -Infinity, -Infinity];
-  for (let i = 0; i < vertTotal; i++) {
+/** Splits the bake's placed dots back out per body mesh. */
+function placedDotsToClouds(placed: PlacedDots, surface: MergedSurface): DotCloudData[] {
+  const counts = surface.meshes.map(() => 0);
+  for (let i = 0; i < placed.meshIndex.length; i++) counts[placed.meshIndex[i]]++;
+  const corners = counts.map((count) => new Uint32Array(count * 3));
+  const barys = counts.map((count) => new Float32Array(count * 3));
+  const spreads = counts.map((count) => new Float32Array(count));
+  const filled = counts.map(() => 0);
+  for (let i = 0; i < placed.meshIndex.length; i++) {
+    const meshIndex = placed.meshIndex[i];
+    const d = filled[meshIndex]++;
     for (let k = 0; k < 3; k++) {
-      const value = positions[i * 3 + k];
-      if (value < min[k]) min[k] = value;
-      if (value > max[k]) max[k] = value;
+      corners[meshIndex][d * 3 + k] = placed.corners[i * 3 + k];
+      barys[meshIndex][d * 3 + k] = placed.bary[i * 3 + k];
     }
+    spreads[meshIndex][d] = placed.spread[i];
   }
-
-  const candidates: DotCandidate[] = [];
-  const ray = new Ray();
-  const triangle = new Triangle();
-  const va = new Vector3();
-  const vb = new Vector3();
-  const vc = new Vector3();
-  const bary = new Vector3();
-  const origin = [0, 0, 0];
-  const direction = [0, 0, 0];
-  const escapeRay = new Ray();
-  let work = 0;
-
-  for (let axis = 0; axis < 3; axis++) {
-    const [u, w] = DOT_GRID_AXES[axis];
-    const uFirst = Math.floor(min[u] / DOT_SPACING);
-    const uLast = Math.ceil(max[u] / DOT_SPACING);
-    const wFirst = Math.floor(min[w] / DOT_SPACING);
-    const wLast = Math.ceil(max[w] / DOT_SPACING);
-    direction[0] = direction[1] = direction[2] = 0;
-    direction[axis] = -1;
-    ray.direction.fromArray(direction);
-
-    for (let iu = uFirst; iu <= uLast; iu++) {
-      for (let iw = wFirst; iw <= wLast; iw++) {
-        origin[axis] = max[axis] + DOT_SPACING;
-        origin[u] = (iu + 0.5) * DOT_SPACING;
-        origin[w] = (iw + 0.5) * DOT_SPACING;
-        ray.origin.fromArray(origin);
-
-        const hits = bvh.raycast(ray, DoubleSide);
-        hits.sort((p, q) => p.distance - q.distance);
-        let lastDistance = -Infinity;
-        for (const hit of hits) {
-          // A ray through a shared edge reports both triangles -- one dot.
-          if (hit.distance - lastDistance < 1e-6) continue;
-          lastDistance = hit.distance;
-          const face = hit.face;
-          if (!face) continue;
-
-          va.fromArray(positions, face.a * 3);
-          vb.fromArray(positions, face.b * 3);
-          vc.fromArray(positions, face.c * 3);
-          if (!triangle.set(va, vb, vc).getBarycoord(hit.point, bary)) continue;
-          // Snap tiny numerical overshoots back onto the triangle.
-          bary.set(Math.max(bary.x, 0), Math.max(bary.y, 0), Math.max(bary.z, 0));
-          const barySum = bary.x + bary.y + bary.z;
-          if (barySum <= 0) continue;
-          bary.divideScalar(barySum);
-
-          // Does this spot face this grid's axis (nearly) the most? See
-          // DOT_SEAM_OVERLAP.
-          let facing = 0;
-          let other = 0;
-          for (let k = 0; k < 3; k++) {
-            const n = Math.abs(
-              normals[face.a * 3 + k] * bary.x +
-                normals[face.b * 3 + k] * bary.y +
-                normals[face.c * 3 + k] * bary.z
-            );
-            if (k === axis) facing = n;
-            else other = Math.max(other, n);
-          }
-          if (facing < DOT_SEAM_OVERLAP * other) continue;
-
-          // Skip surfaces sealed inside the body (see surfaceEscapes).
-          let nx = 0, ny = 0, nz = 0;
-          for (let k = 0; k < 3; k++) {
-            const n =
-              normals[face.a * 3 + k] * bary.x +
-              normals[face.b * 3 + k] * bary.y +
-              normals[face.c * 3 + k] * bary.z;
-            if (k === 0) nx = n;
-            else if (k === 1) ny = n;
-            else nz = n;
-          }
-          const nLength = Math.hypot(nx, ny, nz);
-          if (nLength < 1e-8) continue;
-          const escapeRays = surfaceEscapes(
-            bvh,
-            escapeRay,
-            hit.point.x,
-            hit.point.y,
-            hit.point.z,
-            nx / nLength,
-            ny / nLength,
-            nz / nLength
-          );
-          work += Math.abs(escapeRays);
-          if (escapeRays < 0) continue;
-
-          // Grid spacing as laid on this slanted skin: one grid step along
-          // each of the grid's two directions becomes S * sqrt(1 + (n_dir /
-          // n_axis)^2) on the surface. The 4 nearest neighbours are 2 steps
-          // of each, so their mean distance, in spacings, is the average.
-          const nAxis = Math.max(facing, 1e-3);
-          const nU = Math.abs([nx, ny, nz][u]);
-          const nW = Math.abs([nx, ny, nz][w]);
-          const stretch =
-            (Math.sqrt(1 + (nU / nAxis) ** 2) + Math.sqrt(1 + (nW / nAxis) ** 2)) / 2;
-          candidates.push({
-            x: hit.point.x,
-            y: hit.point.y,
-            z: hit.point.z,
-            nx: nx / nLength,
-            ny: ny / nLength,
-            nz: nz / nLength,
-            priority: facing / nLength,
-            nearSeam: facing < DOT_SEAM_BAND * other,
-            stretch,
-            a: face.a,
-            b: face.b,
-            c: face.c,
-            ba: bary.x,
-            bb: bary.y,
-            bc: bary.z,
-          });
-        }
-
-        // Yield every ~128 grid rays' worth of raycasts (escape tests
-        // included -- sealed dots cost a full fan of rays each).
-        work += 1;
-        if (work >= 128) {
-          work = 0;
-          yield;
-        }
-      }
-    }
-  }
-
-  // Seams: keep the most head-on dots first, drop any later one that lands
-  // too close to a kept one on the same side of the skin (the normal check
-  // keeps both sides of thin parts -- fingers, ears -- dotted).
-  // Only dots near a seam can collide with another grid's dots (elsewhere
-  // only one grid reaches the skin), so only those are checked -- but every
-  // kept dot goes into the lookup, so a seam dot sees all its neighbours.
-  candidates.sort((p, q) => q.priority - p.priority);
-  const minGap = DOT_MIN_GAP * DOT_SPACING;
-  const nearby = new DotHash(minGap);
-  const kept: DotCandidate[] = [];
-  for (let i = 0; i < candidates.length; i++) {
-    const dot = candidates[i];
-    if (!dot.nearSeam || !nearby.anyWithin(dot, minGap)) {
-      nearby.add(dot);
-      kept.push(dot);
-    }
-    if ((i & 4095) === 4095) yield;
-  }
-
-  // Spread, in spacings: measured (mean distance to the 4 nearest dots)
-  // along seams, where two grids mix; elsewhere it's exactly the slant
-  // stretch worked out when the dot was found.
-  const neighbours = new DotHash(2 * DOT_SPACING);
-  for (const dot of kept) neighbours.add(dot);
-  const spreads = new Float32Array(kept.length);
-  for (let i = 0; i < kept.length; i++) {
-    const dot = kept[i];
-    const spread = dot.nearSeam
-      ? neighbours.meanNearest4(dot, 2 * DOT_SPACING) / DOT_SPACING
-      : dot.stretch;
-    spreads[i] = spread > 0 ? Math.min(Math.max(spread, 1), DOT_SPREAD_MAX) : 1;
-    if ((i & 4095) === 4095) yield;
-  }
-
-  const corners: number[][] = meshes.map(() => []);
-  const barys: number[][] = meshes.map(() => []);
-  const meshSpreads: number[][] = meshes.map(() => []);
-  kept.forEach((dot, i) => {
-    const meshIndex = vertexMesh[dot.a];
-    const offset = vertOffsets[meshIndex];
-    corners[meshIndex].push(dot.a - offset, dot.b - offset, dot.c - offset);
-    barys[meshIndex].push(dot.ba, dot.bb, dot.bc);
-    meshSpreads[meshIndex].push(spreads[i]);
-  });
-
-  return meshes.map((mesh, meshIndex) =>
+  return surface.meshes.map((mesh, meshIndex) =>
     buildDotCloudData(
       mesh,
-      new Uint32Array(corners[meshIndex]),
-      new Float32Array(barys[meshIndex]),
-      new Float32Array(meshSpreads[meshIndex]),
+      corners[meshIndex],
+      barys[meshIndex],
+      spreads[meshIndex],
       surface.referenceToMeshScale[meshIndex]
     )
   );
 }
 
-/** A dot found by the grid rays, before seam de-duplication. */
-interface DotCandidate {
-  // Position and unit normal, reference space.
-  x: number;
-  y: number;
-  z: number;
-  nx: number;
-  ny: number;
-  nz: number;
-  // How head-on its grid hits the skin (1 = straight on).
-  priority: number;
-  // Close enough to another grid's region to need seam handling.
-  nearSeam: boolean;
-  // Its grid's dot spacing on this slanted skin, in spacings.
-  stretch: number;
-  // Merged-surface triangle corners and barycentric weights.
-  a: number;
-  b: number;
-  c: number;
-  ba: number;
-  bb: number;
-  bc: number;
-}
-
-/** Uniform spatial hash over dots, for "anything close by?" queries. */
-class DotHash {
-  private cells = new Map<number, DotCandidate[]>();
-  constructor(private cellSize: number) {}
-
-  private key(ix: number, iy: number, iz: number): number {
-    // Hash collisions only merge buckets -- every query still checks the
-    // real distance -- so a cheap integer hash is fine.
-    return ((ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)) | 0;
-  }
-
-  add(dot: DotCandidate) {
-    const s = this.cellSize;
-    const k = this.key(Math.floor(dot.x / s), Math.floor(dot.y / s), Math.floor(dot.z / s));
-    const bucket = this.cells.get(k);
-    if (bucket) bucket.push(dot);
-    else this.cells.set(k, [dot]);
-  }
-
-  private bucketsAround(dot: DotCandidate): DotCandidate[][] {
-    const s = this.cellSize;
-    const cx = Math.floor(dot.x / s);
-    const cy = Math.floor(dot.y / s);
-    const cz = Math.floor(dot.z / s);
-    const buckets: DotCandidate[][] = [];
-    for (let i = -1; i <= 1; i++) {
-      for (let j = -1; j <= 1; j++) {
-        for (let k = -1; k <= 1; k++) {
-          const bucket = this.cells.get(this.key(cx + i, cy + j, cz + k));
-          if (bucket && !buckets.includes(bucket)) buckets.push(bucket);
-        }
-      }
-    }
-    return buckets;
-  }
-
-  /** Any dot on the same side of the skin within `radius` (<= cell size)? */
-  anyWithin(dot: DotCandidate, radius: number): boolean {
-    const r2 = radius * radius;
-    for (const bucket of this.bucketsAround(dot)) {
-      for (const other of bucket) {
-        if (other === dot) continue;
-        const dx = other.x - dot.x, dy = other.y - dot.y, dz = other.z - dot.z;
-        if (dx * dx + dy * dy + dz * dz >= r2) continue;
-        if (dot.nx * other.nx + dot.ny * other.ny + dot.nz * other.nz >= 0.5) return true;
-      }
-    }
-    return false;
-  }
-
-  /** Mean distance to the 4 nearest same-side dots within `radius` (<= cell size), 0 if none. */
-  meanNearest4(dot: DotCandidate, radius: number): number {
-    let d0 = radius * radius, d1 = d0, d2 = d0, d3 = d0;
-    let found = 0;
-    for (const bucket of this.bucketsAround(dot)) {
-      for (const other of bucket) {
-        if (other === dot) continue;
-        const dx = other.x - dot.x, dy = other.y - dot.y, dz = other.z - dot.z;
-        const q = dx * dx + dy * dy + dz * dz;
-        if (q >= d3) continue;
-        if (dot.nx * other.nx + dot.ny * other.ny + dot.nz * other.nz < 0.5) continue;
-        found++;
-        if (q < d0) { d3 = d2; d2 = d1; d1 = d0; d0 = q; }
-        else if (q < d1) { d3 = d2; d2 = d1; d1 = q; }
-        else if (q < d2) { d3 = d2; d2 = q; }
-        else d3 = q;
-      }
-    }
-    const used = Math.min(found, 4);
-    if (used === 0) return 0;
-    const sum = [d0, d1, d2, d3].slice(0, used).reduce((total, q) => total + Math.sqrt(q), 0);
-    return sum / used;
-  }
+/** Splits the bake's per-vertex openness back out per body mesh (by uuid). */
+function splitOcclusion(values: Float32Array, surface: MergedSurface): Map<string, Float32Array> {
+  const result = new Map<string, Float32Array>();
+  surface.meshes.forEach((mesh, meshIndex) => {
+    const start = surface.vertOffsets[meshIndex];
+    const count = mesh.geometry.attributes.position.count;
+    result.set(mesh.uuid, values.slice(start, start + count));
+  });
+  return result;
 }
 
 function buildDotCloudData(
@@ -1899,7 +1489,11 @@ function PosableModel({
   // (buildVertexHighlightFields), which the dots pick up when they're
   // placed -- both are one-time, geometry-driven setup, so they key off
   // [scene] only (not [view]).
-  useEffect(() => {
+  //
+  // A layout effect, not a plain one: it runs before the canvas draws its
+  // next frame, so the GLB is never drawn with its own materials (that
+  // used to flash the bare, unlit model in its default pose on load).
+  useLayoutEffect(() => {
     const regionNames = Array.from(
       new Set(
         Object.values(HIGHLIGHT_REGION_NAMES).filter(
@@ -1939,18 +1533,17 @@ function PosableModel({
     }
   }, [scene]);
 
-  // Places the dots on the skin (see placeSurfaceDots), adds them to the
-  // scene and fades them in -- then bakes the crevice darkening (see
-  // bakeVertexOcclusion) and fades that in too. Runs a few milliseconds
-  // per frame so the page stays responsive. Cancelled cleanly, with the
-  // dots removed again, if the model unmounts (or React's dev StrictMode
-  // double-runs this effect).
+  // Places the dots on the skin, adds them to the scene and fades them in,
+  // then applies the crevice darkening and fades that in too. Both are
+  // computed in background workers, in parallel (see dotBake.ts), so the
+  // page never stalls -- and saved in the browser, so a return visit with
+  // the same model and settings reuses them instantly (see
+  // dotBakeCache.ts). Cancelled cleanly, with the dots removed again, if
+  // the model unmounts (or React's dev StrictMode double-runs this effect).
   useEffect(() => {
     const clouds: { dots: Mesh; data: DotCloudData }[] = [];
-    let surface: MergedSurface | null = null;
-    let placing: Generator<void, DotCloudData[], void> | null = null;
-    let baking: Generator<void, Map<string, Float32Array>, void> | null = null;
-    let frame = 0;
+    const tasks: DotBakeTask<unknown>[] = [];
+    let cancelled = false;
 
     revealTarget.current = 0;
     dotUniforms.uReveal.value = 0;
@@ -1996,44 +1589,47 @@ function PosableModel({
       aoTargetStrength.current = AO_STRENGTH;
     };
 
-    const step = () => {
-      const deadline = performance.now() + AO_BAKE_BUDGET_MS;
-      while (performance.now() < deadline) {
-        if (!surface) {
-          const meshes = collectBodyMeshes(scene);
-          if (meshes.length === 0) return;
-          surface = buildMergedSurface(meshes);
-          placing = placeSurfaceDots(surface);
-          continue;
-        }
-        if (placing) {
-          const next = placing.next();
-          if (next.done) {
-            placing = null;
-            addDotClouds(next.value);
-            baking = bakeVertexOcclusion(surface);
-          }
-          continue;
-        }
-        if (baking) {
-          const next = baking.next();
-          if (next.done) {
-            baking = null;
-            applyOcclusion(next.value);
-            surface.geometry.dispose();
-            return;
-          }
-          continue;
-        }
+    const build = async () => {
+      const meshes = collectBodyMeshes(scene);
+      if (meshes.length === 0) return;
+      const surface = buildMergedSurface(meshes);
+      const bakeSurface = toBakeSurface(surface);
+      const key = dotBakeKey(bakeSurface, DOT_PLACEMENT_PARAMS, OCCLUSION_PARAMS);
+
+      // Saved from an earlier visit, same model and settings?
+      const saved = await loadDotBake(modelPath, key);
+      if (cancelled) return;
+      if (saved) {
+        addDotClouds(placedDotsToClouds(saved.dots, surface));
+        applyOcclusion(splitOcclusion(saved.occlusion, surface));
         return;
       }
-      frame = requestAnimationFrame(step);
-    };
 
-    frame = requestAnimationFrame(step);
+      // No -- compute both, in parallel. The dots show as soon as they're
+      // ready; the darkening is applied once both are in.
+      const dotsTask = runDotBake({ job: "dots", surface: bakeSurface, params: DOT_PLACEMENT_PARAMS });
+      const occlusionTask = runDotBake({
+        job: "occlusion",
+        surface: bakeSurface,
+        params: OCCLUSION_PARAMS,
+      });
+      tasks.push(dotsTask, occlusionTask);
+      const placed = await dotsTask.result;
+      if (cancelled) return;
+      addDotClouds(placedDotsToClouds(placed, surface));
+      const occlusion = await occlusionTask.result;
+      if (cancelled) return;
+      applyOcclusion(splitOcclusion(occlusion, surface));
+      void saveDotBake(modelPath, { key, dots: placed, occlusion });
+    };
+    build().catch((error) => {
+      // eslint-disable-next-line no-console
+      console.error("PosableModel: placing the dots failed", error);
+    });
+
     return () => {
-      cancelAnimationFrame(frame);
-      surface?.geometry.dispose();
+      cancelled = true;
+      for (const task of tasks) task.cancel();
       for (const { dots } of clouds) {
         dots.removeFromParent();
         dots.geometry.dispose();
@@ -2042,7 +1638,7 @@ function PosableModel({
       }
       dotCloudsRef.current = [];
     };
-  }, [scene, dotUniforms]);
+  }, [scene, dotUniforms, modelPath]);
 
   // Button click (or initial mount) -- just record which pose SHOULD be
   // active. All the actual weight blending happens continuously in
@@ -2181,33 +1777,91 @@ function PosableModel({
   // below always matches the exact pose and camera the dots are drawn
   // with (no one-frame lag during pose changes).
   //
-  // First pass: just the (invisible) body, into bodyDepthTarget -- its
-  // depth texture tells every dot whether the body is in front of it.
-  // Second pass: the whole scene to the screen as usual.
+  // Depth passes, each only when its picture would actually change:
+  // - the key light's shadow map: when the body moves (pose);
+  // - the body depth from the camera: when the body or the camera moves,
+  //   or the canvas is resized.
+  // Then the whole scene to the screen as usual, every frame. Once a pose
+  // and the camera have settled, the two extra passes stop entirely.
+  //
+  // "Moved" is checked exactly: every node's world matrix (bones included)
+  // and the camera's matrices are compared with the last pass's copy.
+  const [passState] = useState(() => ({
+    pose: [] as number[],
+    view: new Float32Array(32),
+    hasShadow: false,
+    hasBodyDepth: false,
+  }));
   useFrame((state) => {
     const { gl, camera } = state;
 
     gl.getDrawingBufferSize(drawingBufferSize);
+    let resized = false;
     if (
       bodyDepthTarget.width !== drawingBufferSize.x ||
       bodyDepthTarget.height !== drawingBufferSize.y
     ) {
       bodyDepthTarget.setSize(drawingBufferSize.x, drawingBufferSize.y);
+      resized = true;
     }
     dotUniforms.uResolution.value.copy(drawingBufferSize);
     const perspective = camera as PerspectiveCamera;
     dotUniforms.uCameraNear.value = perspective.near;
     dotUniforms.uCameraFar.value = perspective.far;
 
-    const clouds = dotCloudsRef.current;
-    for (const dots of clouds) dots.visible = false;
-    const previousTarget = gl.getRenderTarget();
-    gl.setRenderTarget(bodyDepthTarget);
-    gl.render(scene, camera);
-    gl.setRenderTarget(keyShadow.target);
-    gl.render(scene, keyShadow.camera);
-    gl.setRenderTarget(previousTarget);
-    for (const dots of clouds) dots.visible = true;
+    // Has the body moved since the last depth pass?
+    scene.updateMatrixWorld();
+    const pose = passState.pose;
+    let poseChanged = false;
+    let n = 0;
+    scene.traverse((object) => {
+      if (object.userData.isDotCloud) return;
+      const elements = object.matrixWorld.elements;
+      for (let k = 0; k < 16; k++, n++) {
+        if (pose[n] !== elements[k]) {
+          pose[n] = elements[k];
+          poseChanged = true;
+        }
+      }
+    });
+    if (pose.length !== n) {
+      pose.length = n;
+      poseChanged = true;
+    }
+
+    // Has the camera moved?
+    camera.updateMatrixWorld();
+    const view = passState.view;
+    let viewChanged = false;
+    for (let k = 0; k < 16; k++) {
+      const world = camera.matrixWorld.elements[k];
+      const projection = camera.projectionMatrix.elements[k];
+      if (view[k] !== world || view[16 + k] !== projection) {
+        view[k] = world;
+        view[16 + k] = projection;
+        viewChanged = true;
+      }
+    }
+
+    const renderShadow = poseChanged || !passState.hasShadow;
+    const renderBodyDepth = poseChanged || viewChanged || resized || !passState.hasBodyDepth;
+    if (renderShadow || renderBodyDepth) {
+      const clouds = dotCloudsRef.current;
+      for (const dots of clouds) dots.visible = false;
+      const previousTarget = gl.getRenderTarget();
+      if (renderBodyDepth) {
+        gl.setRenderTarget(bodyDepthTarget);
+        gl.render(scene, camera);
+        passState.hasBodyDepth = true;
+      }
+      if (renderShadow) {
+        gl.setRenderTarget(keyShadow.target);
+        gl.render(scene, keyShadow.camera);
+        passState.hasShadow = true;
+      }
+      gl.setRenderTarget(previousTarget);
+      for (const dots of clouds) dots.visible = true;
+    }
 
     gl.render(state.scene, camera);
   }, 1);
