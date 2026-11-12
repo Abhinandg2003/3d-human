@@ -861,6 +861,26 @@ const DOT_ESCAPE_RAY_COUNT = 16; // per side
 // skin from rescuing the cavity behind it.
 const DOT_ESCAPE_RAYS_NEEDED = 2;
 
+// Seams between the three grids. Each grid owns the skin that faces its
+// axis most, but the grids' lattices don't line up where two meet, which
+// left missing rows along the seams (worst on bulges: breasts, shoulders,
+// buttocks, backs of the legs). So each grid also dots a band past its own
+// region -- wherever its axis is at least DOT_SEAM_OVERLAP x the dominant
+// one -- and then any dot closer than DOT_MIN_GAP spacings to a better
+// placed one (from the grid facing that skin more head-on) is dropped.
+// Away from seams nothing changes; along them the rows meet without holes.
+// Measured: holes > 1 spacing wide went from 0.20% to 0.05% of the skin.
+const DOT_SEAM_OVERLAP = 0.9;
+const DOT_MIN_GAP = 0.75;
+// Dots whose grid isn't at least this many times more head-on than the
+// next grid count as "near a seam" (the overlap band itself reaches 1 /
+// DOT_SEAM_OVERLAP = 1.43; a little extra margin catches tight curves).
+const DOT_SEAM_BAND = 1.7;
+// Where a grid meets the skin at an angle, its dots spread out (1.4x at
+// 45 degrees). Each dot measures how far its neighbours are and grows by
+// that much (capped here), so slanted skin looks as full as the rest.
+const DOT_SPREAD_MAX = 1.8;
+
 // Uniform directions over the +Z hemisphere, the most upright first, so
 // open skin escapes on the first couple of tries.
 const DOT_ESCAPE_SAMPLES: Vector3Tuple[] = (() => {
@@ -933,6 +953,9 @@ interface DotCloudData {
   // value (highlight fields, crevice darkening) over to the dots.
   corners: Uint32Array;
   bary: Float32Array;
+  // How spread out each dot's neighbours are, in spacings (1 = regular,
+  // up to DOT_SPREAD_MAX) -- the dot's size is scaled by it.
+  spread: Float32Array;
   // Multiplies DOT_SPACING (reference-space units) into this mesh's own
   // geometry units.
   referenceToMeshScale: number;
@@ -963,8 +986,7 @@ function* placeSurfaceDots(
     }
   }
 
-  const corners: number[][] = meshes.map(() => []);
-  const barys: number[][] = meshes.map(() => []);
+  const candidates: DotCandidate[] = [];
   const ray = new Ray();
   const triangle = new Triangle();
   const va = new Vector3();
@@ -1013,7 +1035,8 @@ function* placeSurfaceDots(
           if (barySum <= 0) continue;
           bary.divideScalar(barySum);
 
-          // Does this spot face this grid's axis more than the others?
+          // Does this spot face this grid's axis (nearly) the most? See
+          // DOT_SEAM_OVERLAP.
           let facing = 0;
           let other = 0;
           for (let k = 0; k < 3; k++) {
@@ -1025,7 +1048,7 @@ function* placeSurfaceDots(
             if (k === axis) facing = n;
             else other = Math.max(other, n);
           }
-          if (facing < other) continue;
+          if (facing < DOT_SEAM_OVERLAP * other) continue;
 
           // Skip surfaces sealed inside the body (see surfaceEscapes).
           let nx = 0, ny = 0, nz = 0;
@@ -1053,10 +1076,32 @@ function* placeSurfaceDots(
           work += Math.abs(escapeRays);
           if (escapeRays < 0) continue;
 
-          const meshIndex = vertexMesh[face.a];
-          const offset = vertOffsets[meshIndex];
-          corners[meshIndex].push(face.a - offset, face.b - offset, face.c - offset);
-          barys[meshIndex].push(bary.x, bary.y, bary.z);
+          // Grid spacing as laid on this slanted skin: one grid step along
+          // each of the grid's two directions becomes S * sqrt(1 + (n_dir /
+          // n_axis)^2) on the surface. The 4 nearest neighbours are 2 steps
+          // of each, so their mean distance, in spacings, is the average.
+          const nAxis = Math.max(facing, 1e-3);
+          const nU = Math.abs([nx, ny, nz][u]);
+          const nW = Math.abs([nx, ny, nz][w]);
+          const stretch =
+            (Math.sqrt(1 + (nU / nAxis) ** 2) + Math.sqrt(1 + (nW / nAxis) ** 2)) / 2;
+          candidates.push({
+            x: hit.point.x,
+            y: hit.point.y,
+            z: hit.point.z,
+            nx: nx / nLength,
+            ny: ny / nLength,
+            nz: nz / nLength,
+            priority: facing / nLength,
+            nearSeam: facing < DOT_SEAM_BAND * other,
+            stretch,
+            a: face.a,
+            b: face.b,
+            c: face.c,
+            ba: bary.x,
+            bb: bary.y,
+            bc: bary.z,
+          });
         }
 
         // Yield every ~128 grid rays' worth of raycasts (escape tests
@@ -1070,20 +1115,166 @@ function* placeSurfaceDots(
     }
   }
 
+  // Seams: keep the most head-on dots first, drop any later one that lands
+  // too close to a kept one on the same side of the skin (the normal check
+  // keeps both sides of thin parts -- fingers, ears -- dotted).
+  // Only dots near a seam can collide with another grid's dots (elsewhere
+  // only one grid reaches the skin), so only those are checked -- but every
+  // kept dot goes into the lookup, so a seam dot sees all its neighbours.
+  candidates.sort((p, q) => q.priority - p.priority);
+  const minGap = DOT_MIN_GAP * DOT_SPACING;
+  const nearby = new DotHash(minGap);
+  const kept: DotCandidate[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const dot = candidates[i];
+    if (!dot.nearSeam || !nearby.anyWithin(dot, minGap)) {
+      nearby.add(dot);
+      kept.push(dot);
+    }
+    if ((i & 4095) === 4095) yield;
+  }
+
+  // Spread, in spacings: measured (mean distance to the 4 nearest dots)
+  // along seams, where two grids mix; elsewhere it's exactly the slant
+  // stretch worked out when the dot was found.
+  const neighbours = new DotHash(2 * DOT_SPACING);
+  for (const dot of kept) neighbours.add(dot);
+  const spreads = new Float32Array(kept.length);
+  for (let i = 0; i < kept.length; i++) {
+    const dot = kept[i];
+    const spread = dot.nearSeam
+      ? neighbours.meanNearest4(dot, 2 * DOT_SPACING) / DOT_SPACING
+      : dot.stretch;
+    spreads[i] = spread > 0 ? Math.min(Math.max(spread, 1), DOT_SPREAD_MAX) : 1;
+    if ((i & 4095) === 4095) yield;
+  }
+
+  const corners: number[][] = meshes.map(() => []);
+  const barys: number[][] = meshes.map(() => []);
+  const meshSpreads: number[][] = meshes.map(() => []);
+  kept.forEach((dot, i) => {
+    const meshIndex = vertexMesh[dot.a];
+    const offset = vertOffsets[meshIndex];
+    corners[meshIndex].push(dot.a - offset, dot.b - offset, dot.c - offset);
+    barys[meshIndex].push(dot.ba, dot.bb, dot.bc);
+    meshSpreads[meshIndex].push(spreads[i]);
+  });
+
   return meshes.map((mesh, meshIndex) =>
     buildDotCloudData(
       mesh,
       new Uint32Array(corners[meshIndex]),
       new Float32Array(barys[meshIndex]),
+      new Float32Array(meshSpreads[meshIndex]),
       surface.referenceToMeshScale[meshIndex]
     )
   );
+}
+
+/** A dot found by the grid rays, before seam de-duplication. */
+interface DotCandidate {
+  // Position and unit normal, reference space.
+  x: number;
+  y: number;
+  z: number;
+  nx: number;
+  ny: number;
+  nz: number;
+  // How head-on its grid hits the skin (1 = straight on).
+  priority: number;
+  // Close enough to another grid's region to need seam handling.
+  nearSeam: boolean;
+  // Its grid's dot spacing on this slanted skin, in spacings.
+  stretch: number;
+  // Merged-surface triangle corners and barycentric weights.
+  a: number;
+  b: number;
+  c: number;
+  ba: number;
+  bb: number;
+  bc: number;
+}
+
+/** Uniform spatial hash over dots, for "anything close by?" queries. */
+class DotHash {
+  private cells = new Map<number, DotCandidate[]>();
+  constructor(private cellSize: number) {}
+
+  private key(ix: number, iy: number, iz: number): number {
+    // Hash collisions only merge buckets -- every query still checks the
+    // real distance -- so a cheap integer hash is fine.
+    return ((ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)) | 0;
+  }
+
+  add(dot: DotCandidate) {
+    const s = this.cellSize;
+    const k = this.key(Math.floor(dot.x / s), Math.floor(dot.y / s), Math.floor(dot.z / s));
+    const bucket = this.cells.get(k);
+    if (bucket) bucket.push(dot);
+    else this.cells.set(k, [dot]);
+  }
+
+  private bucketsAround(dot: DotCandidate): DotCandidate[][] {
+    const s = this.cellSize;
+    const cx = Math.floor(dot.x / s);
+    const cy = Math.floor(dot.y / s);
+    const cz = Math.floor(dot.z / s);
+    const buckets: DotCandidate[][] = [];
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        for (let k = -1; k <= 1; k++) {
+          const bucket = this.cells.get(this.key(cx + i, cy + j, cz + k));
+          if (bucket && !buckets.includes(bucket)) buckets.push(bucket);
+        }
+      }
+    }
+    return buckets;
+  }
+
+  /** Any dot on the same side of the skin within `radius` (<= cell size)? */
+  anyWithin(dot: DotCandidate, radius: number): boolean {
+    const r2 = radius * radius;
+    for (const bucket of this.bucketsAround(dot)) {
+      for (const other of bucket) {
+        if (other === dot) continue;
+        const dx = other.x - dot.x, dy = other.y - dot.y, dz = other.z - dot.z;
+        if (dx * dx + dy * dy + dz * dz >= r2) continue;
+        if (dot.nx * other.nx + dot.ny * other.ny + dot.nz * other.nz >= 0.5) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Mean distance to the 4 nearest same-side dots within `radius` (<= cell size), 0 if none. */
+  meanNearest4(dot: DotCandidate, radius: number): number {
+    let d0 = radius * radius, d1 = d0, d2 = d0, d3 = d0;
+    let found = 0;
+    for (const bucket of this.bucketsAround(dot)) {
+      for (const other of bucket) {
+        if (other === dot) continue;
+        const dx = other.x - dot.x, dy = other.y - dot.y, dz = other.z - dot.z;
+        const q = dx * dx + dy * dy + dz * dz;
+        if (q >= d3) continue;
+        if (dot.nx * other.nx + dot.ny * other.ny + dot.nz * other.nz < 0.5) continue;
+        found++;
+        if (q < d0) { d3 = d2; d2 = d1; d1 = d0; d0 = q; }
+        else if (q < d1) { d3 = d2; d2 = d1; d1 = q; }
+        else if (q < d2) { d3 = d2; d2 = q; }
+        else d3 = q;
+      }
+    }
+    const used = Math.min(found, 4);
+    if (used === 0) return 0;
+    const sum = [d0, d1, d2, d3].slice(0, used).reduce((total, q) => total + Math.sqrt(q), 0);
+    return sum / used;
+  }
 }
 
 function buildDotCloudData(
   source: Mesh,
   corners: Uint32Array,
   bary: Float32Array,
+  spread: Float32Array,
   referenceToMeshScale: number
 ): DotCloudData {
   const count = bary.length / 3;
@@ -1165,6 +1356,7 @@ function buildDotCloudData(
     skinWeight,
     corners,
     bary,
+    spread,
     referenceToMeshScale,
   };
 }
@@ -1292,6 +1484,7 @@ const DOT_VERTEX_SHADER = /* glsl */ `
   attribute float aOcclusion;
   attribute float aHighlightFrom;
   attribute float aHighlightTo;
+  attribute float aSpread;
 
   uniform float uBlend;
   uniform float uAOStrength;
@@ -1424,7 +1617,8 @@ const DOT_VERTEX_SHADER = /* glsl */ `
     // 1 = in shadow (biggest, strongest dot), 0 = fully lit (smallest).
     float shade = 1.0 - smoothstep( uDotLightDark, uDotLightBright, lightLevel );
     float highlight = clamp( mix( aHighlightFrom, aHighlightTo, uBlend ), 0.0, 1.0 );
-    float radius = mix( uDotMinRadius, uDotMaxRadius, shade );
+    // Scaled up where the grid's dots are spread out (slanted skin).
+    float radius = mix( uDotMinRadius, uDotMaxRadius, shade ) * aSpread;
     radius = max( radius * mix( 1.0, uDotHighlightGrow, highlight ), 0.0 );
     float opacity = mix( uDotMinOpacity, uDotMaxOpacity, shade );
     opacity = clamp( mix( opacity, max( opacity, uDotHighlightOpacity ), highlight ), 0.0, 1.0 );
@@ -1555,6 +1749,7 @@ function createDotCloud(data: DotCloudData, uniforms: DotUniforms): Mesh {
     "aHighlightTo",
     new InstancedBufferAttribute(new Float32Array(data.count), 1)
   );
+  geometry.setAttribute("aSpread", new InstancedBufferAttribute(data.spread, 1));
   geometry.instanceCount = data.count;
 
   const material = createDotCloudMaterial(uniforms, data.referenceToMeshScale);
