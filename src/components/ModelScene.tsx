@@ -32,13 +32,12 @@ import {
 } from "three";
 import {
   dotBakeKey,
-  runDotBake,
   type BakeSurface,
-  type DotBakeTask,
   type DotPlacementParams,
   type OcclusionParams,
   type PlacedDots,
 } from "./dotBake";
+import { runDotBake, type DotBakeTask } from "./dotBakeRunner";
 import { loadDotBake, saveDotBake } from "./dotBakeCache";
 
 export type ViewKey =

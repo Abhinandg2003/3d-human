@@ -1,8 +1,10 @@
 // The heavy, one-time work behind the dot look: placing the dots on the
 // skin and baking the crevice darkening. Pure number crunching on plain
 // typed arrays (no scene objects), so it runs inside a Web Worker -- off
-// the main thread, at full speed -- see dotBake.worker.ts and runDotBake
-// below. ModelScene.tsx owns all the tuning knobs and passes them in.
+// the main thread, at full speed -- see dotBake.worker.ts and
+// dotBakeRunner.ts. ModelScene.tsx owns all the tuning knobs and passes
+// them in. This file must never start a Worker itself (see
+// dotBakeRunner.ts for why).
 
 import { BufferAttribute, BufferGeometry, DoubleSide, Ray, Triangle, Vector3 } from "three";
 import { MeshBVH } from "three-mesh-bvh";
@@ -538,7 +540,8 @@ export function placeDots(surface: BakeSurface, params: DotPlacementParams): Pla
 }
 
 // ---------------------------------------------------------------------
-// Running it: in a Web Worker when possible, on the main thread if not.
+// One bake job, run synchronously (the worker calls this; see
+// dotBakeRunner.ts for starting jobs in a worker).
 // ---------------------------------------------------------------------
 
 export type DotBakeJob =
@@ -551,66 +554,6 @@ export function runDotBakeJob(request: DotBakeJob): PlacedDots | Float32Array {
     : bakeOcclusion(request.surface, request.params);
 }
 
-/** A running bake: its result, and a way to stop it early. */
-export interface DotBakeTask<T> {
-  result: Promise<T>;
-  cancel: () => void;
-}
-
-/**
- * Runs one bake job in its own Web Worker (so two jobs run in parallel,
- * and the page never stalls). Falls back to running on the main thread
- * if workers aren't available.
- */
-export function runDotBake(request: { job: "dots"; surface: BakeSurface; params: DotPlacementParams }): DotBakeTask<PlacedDots>;
-export function runDotBake(request: { job: "occlusion"; surface: BakeSurface; params: OcclusionParams }): DotBakeTask<Float32Array>;
-export function runDotBake(request: DotBakeJob): DotBakeTask<PlacedDots | Float32Array> {
-  let worker: Worker | null = null;
-  let cancelled = false;
-  const runHere = () =>
-    new Promise<PlacedDots | Float32Array>((resolve, reject) => {
-      // Let the current frame finish first.
-      setTimeout(() => {
-        if (cancelled) return;
-        try {
-          resolve(runDotBakeJob(request));
-        } catch (error) {
-          reject(error);
-        }
-      }, 0);
-    });
-
-  const result = new Promise<PlacedDots | Float32Array>((resolve, reject) => {
-    try {
-      worker = new Worker(new URL("./dotBake.worker.ts", import.meta.url), { type: "module" });
-    } catch {
-      runHere().then(resolve, reject);
-      return;
-    }
-    worker.onmessage = (event: MessageEvent<{ result?: PlacedDots | Float32Array; error?: string }>) => {
-      worker?.terminate();
-      worker = null;
-      if (event.data.result) resolve(event.data.result);
-      else reject(new Error(event.data.error ?? "dot bake failed"));
-    };
-    worker.onerror = () => {
-      // The worker couldn't load or crashed -- do it here instead.
-      worker?.terminate();
-      worker = null;
-      runHere().then(resolve, reject);
-    };
-    worker.postMessage(request);
-  });
-
-  return {
-    result,
-    cancel: () => {
-      cancelled = true;
-      worker?.terminate();
-      worker = null;
-    },
-  };
-}
 
 // ---------------------------------------------------------------------
 // Fingerprint of a bake's inputs, so saved results are only reused for
