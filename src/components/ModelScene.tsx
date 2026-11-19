@@ -54,9 +54,10 @@ export type ViewKey =
   | "calves";
 type Vector3Tuple = [number, number, number];
 
-// Male rigged/posable model. (Gender swap removed -- this is the only model
-// the scene renders now.)
-const MODEL_PATH = "/female-rigged-nomeshsculpt3-meshedited-thigh.glb";
+// The two rigged/posable models the toggle switches between (see MODELS
+// below for each one's pose and material names).
+const FEMALE_MODEL_PATH = "/female-rigged-nomeshsculpt3-meshedited-thigh.glb";
+const MALE_MODEL_PATH = "/Man_Mesh_clean9.glb";
 
 const VIEWS: Record<
   ViewKey,
@@ -79,9 +80,10 @@ const VIEWS: Record<
 // Maps each camera-view button to the name of the animation Action/clip it
 // should trigger on the rigged model. "reset" now points at your own
 // "default" pose clip -- change the string below if you named it
-// differently in Blender. "arms" maps to the clip name "arm" (singular)
-// to match how the poses are named inside Man_Mesh clean3.glb.
-const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
+// differently in Blender. Each model has its own map (its clips are named
+// differently): this one is the female model's, MALE_POSE_ACTION_NAMES
+// below the man's.
+const FEMALE_POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   reset: "default",
   head2: "default",
   heart: "heart",
@@ -97,14 +99,29 @@ const POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   
 };
 
+// The man's pose clips (Man_Mesh_clean9.glb has: default, head, heart, arm).
+const MALE_POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
+  reset: "default",
+  head2: "head",
+  heart: "heart",
+  arms: "arm",
+  kidney: "default",
+  thyroid: "head",
+  liver: "default",
+  lungs: "default",
+  thighs: "default",
+  genitals: "default",
+  calves: "default",
+};
+
 // Maps each view/button to the name of the MATERIAL SLOT (assigned to a
 // group of faces in Blender) that should light up when that pose is
-// active. This is a separate mapping from POSE_ACTION_NAMES above on
+// active. This is a separate mapping from the pose names above on
 // purpose -- the pose clip for the arms button is named "arm" (singular),
-// but the material slot covering that same area is named "hands" (see
-// female-rigged-nomeshsculpt3-meshedited-thigh.glb's material list). "reset" has no highlighted region
-// at all -- clicking it turns every highlight off.
-const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
+// but the material slot covering that same area is named differently.
+// "reset" has no highlighted region at all -- clicking it turns every
+// highlight off. Female model's slots here, the man's below.
+const FEMALE_HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
   head2: "femalebrainfinal",
   heart: "femaleheart",
@@ -116,7 +133,22 @@ const HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   thighs:"femalethighs",
   genitals:"femalegenitals",
   calves: "femalecalves"
-  
+
+};
+
+// The man's material slots (from Man_Mesh_clean9.glb's material list).
+const MALE_HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
+  reset: null,
+  head2: "head3",
+  heart: "heart3",
+  arms: "hands5",
+  kidney: "kidney4",
+  thyroid: "thyroid2",
+  liver: "liver3",
+  lungs: "lungs3",
+  thighs: "thighs",
+  genitals: "genitals",
+  calves: "calves",
 };
 
 // ---------------------------------------------------------------------
@@ -143,7 +175,7 @@ const DOT_SPACING = 0.01;
 // fully lit skin (MIN) and for skin in shadow / inside crevices (MAX).
 // Halftone: the darker a spot is lit, the bigger its dot. Dots always
 // face the screen, so this is their on-screen size wherever they sit.
-const DOT_MIN_RADIUS = 0.2;
+const DOT_MIN_RADIUS = 0.15;
 const DOT_MAX_RADIUS = 0.4;
 // Dot opacity for fully lit (MIN) and fully shadowed (MAX) skin.
 const DOT_MIN_OPACITY = 0.7;
@@ -182,11 +214,12 @@ const DOT_REVEAL_SPEED = 3;
 const HIGHLIGHT_BLEND_RADIUS = 0.35;
 
 // Per-region overrides for the radius above -- keyed by the same material
-// slot name used in HIGHLIGHT_REGION_NAMES (e.g. "head3", "kidney4"), NOT
-// the view key. Any region left out of this map just uses
+// slot name used in the *_HIGHLIGHT_REGION_NAMES maps (e.g. "femaleheart",
+// "kidney4"), NOT the view key. Any region left out just uses
 // HIGHLIGHT_BLEND_RADIUS. Handy for small/deep organs (kidney, thyroid)
 // that want a tighter halo, or a big one (liver) that wants more spread.
-const HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
+// Female model's slots here, the man's below.
+const FEMALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
   femalethyroid: 0.1,
   femaleheart: 0.2,
   femalekidney: 0.2,
@@ -199,15 +232,15 @@ const HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
 
 };
 
-function getHighlightBlendRadius(regionName: string): number {
-  return HIGHLIGHT_BLEND_RADIUS_OVERRIDES[regionName] ?? HIGHLIGHT_BLEND_RADIUS;
-}
-
-// How fast the color transition eases in when switching views, in
-// roughly 1/seconds -- same exponential-decay idiom as POSE_BLEND_SPEED
-// above, just driving a single blend scalar instead of animation weights.
-// Higher = snappier. 4 -> the dot colors are ~95% faded after ~0.75s.
-const HIGHLIGHT_FADE_SPEED = 4;
+const MALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
+  thyroid2: 0.15,
+  kidney4: 0.25,
+  liver3: 0.2,
+  head3: 0.25,
+  thighs: 0.25,
+  genitals: 0.25,
+  calves: 0.2,
+};
 
 // Man_Mesh clean3.glb's own mesh is ~4.96 units tall, but every camera target/
 // distance above (e.g. head target y=1.68) was tuned assuming a roughly
@@ -215,7 +248,48 @@ const HIGHLIGHT_FADE_SPEED = 4;
 // every camera number, we shrink the model itself on import. Cleanest
 // long-term fix is applying scale in Blender before export instead
 // (Object > Apply > Scale) -- then this constant can go back to 1.
+// (Used as the female model's scale; the man has his own, see MODELS.)
 const MAN_MESH_SCALE = 1.8 / 4.96;
+
+// Everything that differs between the two models. The toggle picks one.
+type ModelKey = "female" | "male";
+interface ModelConfig {
+  label: string;
+  path: string;
+  poseActionNames: Record<ViewKey, string | null>;
+  highlightRegionNames: Record<ViewKey, string | null>;
+  highlightBlendRadiusOverrides: Record<string, number>;
+  // GLB units -> meters on screen (see MAN_MESH_SCALE).
+  scale: number;
+}
+const MODELS: Record<ModelKey, ModelConfig> = {
+  female: {
+    label: "Female",
+    path: FEMALE_MODEL_PATH,
+    scale: MAN_MESH_SCALE,
+    poseActionNames: FEMALE_POSE_ACTION_NAMES,
+    highlightRegionNames: FEMALE_HIGHLIGHT_REGION_NAMES,
+    highlightBlendRadiusOverrides: FEMALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES,
+  },
+  male: {
+    label: "Male",
+    path: MALE_MODEL_PATH,
+    // His mesh is 4.95 units tall -> 1.65m, close to the female's ~1.61m.
+    scale: 1.65 / 4.95,
+    poseActionNames: MALE_POSE_ACTION_NAMES,
+    highlightRegionNames: MALE_HIGHLIGHT_REGION_NAMES,
+    highlightBlendRadiusOverrides: MALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES,
+  },
+};
+// Which model shows first.
+const DEFAULT_MODEL: ModelKey = "female";
+
+// How fast the color transition eases in when switching views, in
+// roughly 1/seconds -- same exponential-decay idiom as POSE_BLEND_SPEED
+// above, just driving a single blend scalar instead of animation weights.
+// Higher = snappier. 4 -> the dot colors are ~95% faded after ~0.75s.
+const HIGHLIGHT_FADE_SPEED = 4;
+
 
 // How fast each pose's blend weight converges toward its target (1 if
 // it's the active pose, 0 otherwise), in roughly 1/seconds. Lower = 
@@ -1369,9 +1443,9 @@ function createDotCloud(data: DotCloudData, uniforms: DotUniforms): Mesh {
 
 /**
  * Rigged, posable model driven by view/button state. Looks up an
- * AnimationAction by name (via POSE_ACTION_NAMES) for the active view and
- * blends into it, holding as a still pose rather than looping. If the GLB
- * doesn't contain a clip with that name (see POSE_ACTION_NAMES), it just
+ * AnimationAction by name (via the model's poseActionNames, see MODELS) for
+ * the active view and blends into it, holding as a still pose rather than
+ * looping. If the GLB doesn't contain a clip with that name, it just
  * logs a warning and leaves the model in whatever pose it was already in
  * -- it won't crash.
  *
@@ -1396,10 +1470,10 @@ function createDotCloud(data: DotCloudData, uniforms: DotUniforms): Mesh {
  * alongside this in ModelScene) keeps handling all camera movement.
  */
 function PosableModel({
-  modelPath,
+  model,
   view,
 }: {
-  modelPath: string;
+  model: ModelConfig;
   view: ViewKey;
 }) {
   // Three.js's AnimationAction API (`.play()`, `.setEffectiveWeight()`,
@@ -1409,6 +1483,12 @@ function PosableModel({
   "use no memo";
 
   const groupRef = useRef<Group>(null);
+  const {
+    path: modelPath,
+    poseActionNames,
+    highlightRegionNames,
+    highlightBlendRadiusOverrides,
+  } = model;
   const { scene, animations } = useGLTF(modelPath);
   const { actions, names } = useAnimations(animations, groupRef);
   // Name of whichever pose should currently be weighted toward 1. Every
@@ -1495,7 +1575,7 @@ function PosableModel({
   useLayoutEffect(() => {
     const regionNames = Array.from(
       new Set(
-        Object.values(HIGHLIGHT_REGION_NAMES).filter(
+        Object.values(highlightRegionNames).filter(
           (name): name is string => !!name
         )
       )
@@ -1503,7 +1583,7 @@ function PosableModel({
     const fields = buildVertexHighlightFields(
       scene,
       regionNames,
-      getHighlightBlendRadius
+      (regionName) => highlightBlendRadiusOverrides[regionName] ?? HIGHLIGHT_BLEND_RADIUS
     );
     highlightFieldsRef.current = fields;
 
@@ -1530,7 +1610,7 @@ function PosableModel({
       mesh.castShadow = false;
       mesh.receiveShadow = false;
     }
-  }, [scene]);
+  }, [scene, highlightRegionNames, highlightBlendRadiusOverrides]);
 
   // Places the dots on the skin, adds them to the scene and fades them in,
   // then applies the crevice darkening and fades that in too. Both are
@@ -1644,7 +1724,7 @@ function PosableModel({
   // useFrame below, driven off this ref, so this effect does no direct
   // animation work itself.
   useEffect(() => {
-    const targetName = POSE_ACTION_NAMES[view];
+    const targetName = poseActionNames[view];
     if (targetName && !actions[targetName]) {
       // eslint-disable-next-line no-console
       console.warn(
@@ -1653,7 +1733,7 @@ function PosableModel({
       );
     }
     activeActionName.current = targetName;
-  }, [view, actions, names, modelPath]);
+  }, [view, actions, names, modelPath, poseActionNames]);
 
   // Re-target the dot color toward whichever region matches the active
   // view: that region's dots fade to HIGHLIGHT_COLOR while the previous
@@ -1664,7 +1744,7 @@ function PosableModel({
   // from 0 back to 1 -- same "no stuck mid-transition" reasoning as the
   // pose blending above, just for color.
   useEffect(() => {
-    const activeRegion = HIGHLIGHT_REGION_NAMES[view];
+    const activeRegion = highlightRegionNames[view];
     activeRegionRef.current = activeRegion;
     const fieldsByMesh = highlightFieldsRef.current;
     const blendSoFar = dotUniforms.uBlend.value;
@@ -1710,7 +1790,7 @@ function PosableModel({
     });
 
     dotUniforms.uBlend.value = 0;
-  }, [view, scene, modelPath, dotUniforms]);
+  }, [view, scene, modelPath, dotUniforms, highlightRegionNames]);
 
   useFrame((_state, delta) => {
     const activeName = activeActionName.current;
@@ -1866,7 +1946,7 @@ function PosableModel({
   }, 1);
 
   return (
-    <group ref={groupRef} scale={MAN_MESH_SCALE}>
+    <group ref={groupRef} scale={model.scale}>
       <primitive object={scene} />
     </group>
   );
@@ -1941,6 +2021,10 @@ interface ModelSceneProps {
 }
 
 export default function ModelScene({ view, onViewChange, scores }: ModelSceneProps) {
+  // Which model is shown (the Female / Male toggle).
+  const [modelKey, setModelKey] = useState<ModelKey>(DEFAULT_MODEL);
+  const model = MODELS[modelKey];
+
   return (
     <div
       className="relative w-full h-[60vh] sm:h-[60vh] lg:h-dvh lg:w-[70vw]"
@@ -1970,7 +2054,9 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
         <directionalLight position={FILL_LIGHT_POS} intensity={FILL_LIGHT_INTENSITY} />
         <directionalLight position={RIM_LIGHT_POS} intensity={RIM_LIGHT_INTENSITY} />
 
-        <PosableModel key={MODEL_PATH} modelPath={MODEL_PATH} view={view} />
+        {/* Keyed by the model, so switching mounts the other one fresh
+            (its own dots, poses and highlights) and cleans up the old. */}
+        <PosableModel key={model.path} model={model} view={view} />
         <CameraRig view={view} />
 
         <ContactShadows
@@ -1987,6 +2073,24 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
           3D Human
         </h1>
       </div> */}
+
+      {/* Female / Male model toggle. */}
+      <div className="absolute top-4 right-4 sm:top-6 sm:right-6 z-[1000] flex items-center gap-1 rounded-full bg-white/50 p-1 shadow-md shadow-black/5 backdrop-blur-2xl">
+        {(Object.keys(MODELS) as ModelKey[]).map((key) => (
+          <button
+            key={key}
+            onClick={() => setModelKey(key)}
+            aria-pressed={modelKey === key}
+            className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${
+              modelKey === key
+                ? "bg-white text-black shadow-sm shadow-black/5"
+                : "text-black/50 hover:text-black"
+            }`}
+          >
+            {MODELS[key].label}
+          </button>
+        ))}
+      </div>
 
       <div className="absolute bottom-0 left-0 w-full h-[10vh] z-[999] pointer-events-none">
   <div className="w-full h-full bg-gradient-to-t from-[#f9f9f9] to-transparent" />
@@ -2012,7 +2116,9 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
   );
 }
 
-useGLTF.preload(MODEL_PATH);
+// Both models load up front, so the toggle switches without a wait.
+useGLTF.preload(FEMALE_MODEL_PATH);
+useGLTF.preload(MALE_MODEL_PATH);
 
 // (Man_Mesh clean3.glb ships with no built-in animation clips named "arm"/"head"/
 // "heart" yet -- see chat for details. PosableModel above will still run
