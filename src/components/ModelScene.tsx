@@ -23,7 +23,11 @@ import {
   PerspectiveCamera,
   ShaderMaterial,
   SkinnedMesh,
+  Sprite,
+  SpriteMaterial,
+  SRGBColorSpace,
   Texture,
+  TextureLoader,
   UniformsLib,
   UniformsUtils,
   Vector2,
@@ -44,14 +48,14 @@ export type ViewKey =
   | "reset"
   | "head2"
   | "heart"
-  | "arms"
+  // | "arms"
   | "kidney"
   | "thyroid"
   | "liver"
   | "lungs"
-  | "thighs"
-  | "genitals"
-  | "calves";
+  // | "thighs"
+  // | "genitals"
+  // | "calves";
 type Vector3Tuple = [number, number, number];
 
 // The two rigged/posable models the toggle switches between (see MODELS
@@ -63,22 +67,21 @@ const VIEWS: Record<
   ViewKey,
   { label: string; camPos: Vector3Tuple; target: Vector3Tuple }
 > = {
-  reset: { label: "Full Body", camPos: [-0.25, 1.45, 1.35], target: [-0.1, 1.38, 0]  },
-  head2: { label: "Brain", camPos: [-0.75, 1.75, 0.85], target: [0, 1.40, 0] },
+  reset: { label: "Full Body", camPos: [-0.25, 1.45, 1.35], target: [-0.1, 1.38, 0] },
+  head2: { label: "Brain", camPos: [-0.75, 1.75, 0.85], target: [0, 1.4, 0] },
   heart: { label: "Heart", camPos: [0.45, 1.45, 1.25], target: [0, 1.38, 0] },
-  arms: { label: "Arms", camPos: [0.7, 1.35, 1.3], target: [0.5, 1.25, 0] },
-    kidney: { label: "Kidney", camPos: [0, 1.25, 0.85], target: [0, 1.17, 0] },
-  thyroid: { label: "Thyroid",  camPos: [0.25, 1.15, 0.7], target: [0, 1.40, 0] },
+  // arms: { label: "Arms", camPos: [0.7, 1.35, 1.3], target: [0.5, 1.25, 0] },
+  kidney: { label: "Kidney", camPos: [0, 1.25, 0.85], target: [0, 1.17, 0] },
+  thyroid: { label: "Thyroid", camPos: [0.25, 1.15, 0.7], target: [0, 1.4, 0] },
   liver: { label: "Liver", camPos: [-0.45, 1.25, 0.6], target: [0, 1.18, 0] },
   lungs: { label: "Lungs", camPos: [-0, 1.35, 0.9], target: [0, 1.28, 0] },
-  thighs: { label: "Thighs", camPos: [-0, 0.65, 1.25], target: [0, 0.75, 0] },
-  genitals: { label: "Genitals", camPos: [-0, 1.2, 1.25], target: [0, .85, 0] },
-  calves: { label: "Calves", camPos: [-0, 0.45, -1.25], target: [0, 0.38, 0] },
-
+  // thighs: { label: "Thighs", camPos: [-0, 0.65, 1.25], target: [0, 0.75, 0] },
+  // genitals: { label: "Genitals", camPos: [-0, 1.2, 1.25], target: [0, 0.85, 0] },
+  // calves: { label: "Calves", camPos: [-0, 0.45, -1.25], target: [0, 0.38, 0] },
 };
 
 // Maps each camera-view button to the name of the animation Action/clip it
-// should trigger on the rigged model. "reset" now points at your own
+// should trigger on the rigged model. "reset" points at your own
 // "default" pose clip -- change the string below if you named it
 // differently in Blender. Each model has its own map (its clips are named
 // differently): this one is the female model's, MALE_POSE_ACTION_NAMES
@@ -86,17 +89,15 @@ const VIEWS: Record<
 const FEMALE_POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   reset: "default",
   head2: "default",
-  heart: "heart",
-  arms: "arm",
+  heart: "default",
+  // arms: "arm",
   kidney: "default",
-  thyroid:"head2",
+  thyroid: "head2",
   liver: "default",
-  lungs:"default",
-  thighs:"default",
-  genitals:"default",
-  calves:"default"
-
-  
+  lungs: "default",
+  // thighs: "default",
+  // genitals: "default",
+  // calves: "default",
 };
 
 // The man's pose clips (Man_Mesh_clean9.glb has: default, head, heart, arm).
@@ -104,36 +105,36 @@ const MALE_POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   reset: "default",
   head2: "head",
   heart: "heart",
-  arms: "arm",
+  // arms: "arm",
   kidney: "default",
   thyroid: "head",
   liver: "default",
   lungs: "default",
-  thighs: "default",
-  genitals: "default",
-  calves: "default",
+  // thighs: "default",
+  // genitals: "default",
+  // calves: "default",
 };
 
 // Maps each view/button to the name of the MATERIAL SLOT (assigned to a
-// group of faces in Blender) that should light up when that pose is
-// active. This is a separate mapping from the pose names above on
-// purpose -- the pose clip for the arms button is named "arm" (singular),
-// but the material slot covering that same area is named differently.
-// "reset" has no highlighted region at all -- clicking it turns every
-// highlight off. Female model's slots here, the man's below.
+// group of faces in Blender) that is "the organ" when that pose is
+// active. The dots around it fade out, and its image is shown over the
+// model, centered on it. This is a separate mapping from the pose names
+// above on purpose -- the pose clip for the arms button is named "arm"
+// (singular), but the material slot covering that same area is named
+// differently. "reset" has no region at all -- clicking it turns every
+// effect off. Female model's slots here, the man's below.
 const FEMALE_HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
   head2: "femalebrainfinal",
   heart: "femaleheart",
-  arms: "femalearms",
+  // arms: "femalearms",
   kidney: "femalekidney",
-  thyroid:"femalethyroid",
+  thyroid: "femalethyroid",
   liver: "femaleliver",
-  lungs:"femalelungs",
-  thighs:"femalethighs",
-  genitals:"femalegenitals",
-  calves: "femalecalves"
-
+  lungs: "femalelungs",
+  // thighs: "femalethighs",
+  // genitals: "femalegenitals",
+  // calves: "femalecalves",
 };
 
 // The man's material slots (from Man_Mesh_clean9.glb's material list).
@@ -141,35 +142,33 @@ const MALE_HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
   head2: "head3",
   heart: "heart3",
-  arms: "hands5",
+  // arms: "hands5",
   kidney: "kidney4",
   thyroid: "thyroid2",
   liver: "liver3",
   lungs: "lungs3",
-  thighs: "thighs",
-  genitals: "genitals",
-  calves: "calves",
+  // thighs: "thighs",
+  // genitals: "genitals",
+  // calves: "calves",
 };
 
 // ---------------------------------------------------------------------
 // Dotted look. The body itself is invisible -- only dots pinned to its
 // skin are drawn, each one a flat round dot facing the screen, with the
-// page background showing between them. See placeSurfaceDots and
-// DOT_VERTEX_SHADER for how it works.
+// page background showing between them. See DOT_VERTEX_SHADER for how it
+// works.
 // ---------------------------------------------------------------------
 
-// Resting dot color: a soft, low-saturation cyan that sits well on the
-// white page.
+// Resting dot color.
 const DOT_COLOR = "#dcdcdc";
-// Dot color inside whichever region is currently highlighted. The dots
-// in that region fade from DOT_COLOR to this (and grow slightly, see
-// DOT_HIGHLIGHT_GROW); switching regions fades the old one back to
-// DOT_COLOR at the same time. The skin itself is never tinted.
+// Dot color inside the selected region when its organ image is NOT shown:
+// "Hide organs" is on, or that region has no image. The dots fade from
+// DOT_COLOR to this instead of fading out.
 const HIGHLIGHT_COLOR = "#8df0b0";
 
 // Distance between neighboring dots (rows and columns), in the GLB's own
-// unscaled units -- the female model is ~4.43 units tall, so 0.018 is
-// ~6.5mm on the rendered body (~250 rows head to toe). Smaller = finer.
+// unscaled units -- the female model is ~4.43 units tall, so 0.01 is
+// ~3.6mm on the rendered body. Smaller = finer.
 const DOT_SPACING = 0.01;
 // Dot radius as a fraction of DOT_SPACING (0.5 = neighbors touch), for
 // fully lit skin (MIN) and for skin in shadow / inside crevices (MAX).
@@ -182,43 +181,33 @@ const DOT_MIN_OPACITY = 0.7;
 const DOT_MAX_OPACITY = 1;
 // Which lit brightness counts as "in shadow" (at or below DOT_LIGHT_DARK:
 // MAX radius/opacity) and "fully lit" (at or above DOT_LIGHT_BRIGHT: MIN
-// radius/opacity), smoothly in between. Brightness is the luminance of
-// the diffuse light a white surface would get there (all lights, times
-// the crevice darkening). Raise both to make dots bigger overall, lower
-// both for smaller; pull them apart for a gentler size range.
+// radius/opacity), smoothly in between.
 const DOT_LIGHT_DARK = 0.25;
 const DOT_LIGHT_BRIGHT = 1.15;
-// Inside the highlighted region, dots grow by this factor and are at
-// least this opaque.
+// Inside the selected region the dots are scaled by DOT_HIGHLIGHT_GROW
+// (1 = same size), and:
+// - organ image shown: they keep DOT_HIGHLIGHT_OPACITY of their normal
+//   opacity (1 = no change, 0 = fully invisible), so the image reads;
+// - organ image hidden / none: they turn HIGHLIGHT_COLOR and are at least
+//   DOT_COLOR_HIGHLIGHT_OPACITY opaque.
 const DOT_HIGHLIGHT_GROW = 1;
-const DOT_HIGHLIGHT_OPACITY = 0.75;
+const DOT_HIGHLIGHT_OPACITY = 0.12;
+const DOT_COLOR_HIGHLIGHT_OPACITY = 0.75;
 // How far behind the body's visible surface (as a fraction of
-// DOT_SPACING) a dot may sit and still show. Dots sit ON the surface, so
-// this only absorbs depth precision; dots hidden behind another part of
-// the body (an arm across the chest) are far beyond it.
+// DOT_SPACING) a dot may sit and still show.
 const DOT_OCCLUSION_TOLERANCE = 1.5;
-// Fade-in speed once the dots have been placed on load, same
-// exponential-decay idiom as HIGHLIGHT_FADE_SPEED.
+// Fade-in speed once the dots have been placed on load.
 const DOT_REVEAL_SPEED = 3;
 
-// How far (in the model's own unscaled local units -- the same space
-// MAN_MESH_SCALE is later applied to) a highlighted region's color bleeds
-// past its original Blender material-slot boundary before fading to
-// nothing. This is what turns the old hard per-material-slot cutoff into
-// a smooth gradient: every vertex on the WHOLE mesh (not just the ones in
-// the active material slot) gets a 0..1 weight based on its distance to
-// the nearest vertex that belongs to the active region, eased with a
-// smoothstep, and that weight is what actually drives the color blend.
-// Bigger = softer/wider halo around the region, smaller = tighter to the
-// original slot's edge.
+// How far (in the model's own unscaled local units) the dot fade bleeds
+// past the region's original Blender material-slot boundary before
+// fading to nothing. Every vertex on the WHOLE mesh gets a 0..1 weight
+// based on its distance to the nearest vertex of the active region,
+// eased with a smoothstep. Bigger = softer/wider halo.
 const HIGHLIGHT_BLEND_RADIUS = 0.35;
 
-// Per-region overrides for the radius above -- keyed by the same material
-// slot name used in the *_HIGHLIGHT_REGION_NAMES maps (e.g. "femaleheart",
-// "kidney4"), NOT the view key. Any region left out just uses
-// HIGHLIGHT_BLEND_RADIUS. Handy for small/deep organs (kidney, thyroid)
-// that want a tighter halo, or a big one (liver) that wants more spread.
-// Female model's slots here, the man's below.
+// Per-region overrides for the radius above -- keyed by the material slot
+// name (e.g. "femaleheart", "kidney4"), NOT the view key.
 const FEMALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
   femalethyroid: 0.1,
   femaleheart: 0.2,
@@ -227,9 +216,8 @@ const FEMALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
   femalebrainfinal: 0.25,
   femalelungs: 0.15,
   femalethighs: 0.15,
-  femalegenitals:0.15,
-  femalecalves:0.15
-
+  femalegenitals: 0.15,
+  femalecalves: 0.15,
 };
 
 const MALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
@@ -242,13 +230,132 @@ const MALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
   calves: 0.2,
 };
 
+// ---------------------------------------------------------------------
+// Organ images. NOT mapped onto the skin: each image is a flat picture
+// that always faces the camera, floating over the model. It is pinned to
+// the CENTER of the selected region's faces (tracked through the pose,
+// so it follows the body when it moves), and sized in meters on the
+// rendered body -- a brain image can be 0.3m wide while a thyroid image
+// is 0.1m.
+//
+// How an image is placed, all tunable per organ:
+//   width    - how wide the image is, in meters (height follows the
+//              image's own aspect ratio, or use `height` to override).
+//   anchor   - which point OF THE IMAGE sits on the region's center, as
+//              [x, y] from 0..1 (0,0 = bottom-left, 1,1 = top-right).
+//              Default [0.5, 0.5] = the middle of the image. E.g. for a
+//              heart picture whose heart is in the lower-left of the
+//              file, use [0.3, 0.35] so THAT spot lands on the region.
+//   scale    - size multiplier for this organ only: 1 = `width` as
+//              written, 1.2 = 20% bigger, 0.8 = 20% smaller. The quick
+//              way to resize one organ without redoing its width.
+//   modelOffset - moves the image from the region's center, in meters
+//              ON THE MODEL (her own axes, whatever the camera does):
+//              [x, y] or [x, y, z].
+//                x: + = toward the right of the screen when she is seen
+//                       from the front (her own left side), - = the other;
+//                y: + = up toward the head, - = down toward the feet;
+//                z: + = forward (out of her chest), - = toward her back.
+//              Use this when a region's center isn't where the organ
+//              should sit (brain, liver). 0.05 = 5cm on the body.
+//   offset   - nudges the image from there, in meters ON SCREEN:
+//              [right, up]. Negative = left / down. Follows the camera,
+//              not the body.
+//   rotation - degrees, counter-clockwise on screen.
+//   opacity  - 0..1 final opacity of the picture.
+//   center   - "mean" = average of the region's points (default);
+//              "bounds" = middle of the region's bounding box. Try
+//              "bounds" for long/L-shaped regions like arms.
+//   responsive - different values per screen size. Anything listed under
+//              `mobile` / `tablet` / `desktop` replaces the organ's main
+//              value on that screen size (see ORGAN_IMAGE_TABLET_FROM /
+//              ORGAN_IMAGE_DESKTOP_FROM for where they switch); anything
+//              not listed keeps the main value. E.g.
+//                { src, width: 0.3, modelOffset: [0, 0.05],
+//                  responsive: { mobile: { width: 0.24, modelOffset: [0, 0.03] } } }
+// ---------------------------------------------------------------------
+// The values that can differ per screen size.
+interface OrganImagePlacement {
+  width: number;
+  height?: number;
+  scale?: number;
+  modelOffset?: [number, number] | [number, number, number];
+  offset?: [number, number];
+  opacity?: number;
+}
+type ScreenSize = "mobile" | "tablet" | "desktop";
+interface OrganImage extends OrganImagePlacement {
+  src: string;
+  anchor?: [number, number];
+  rotation?: number;
+  center?: "mean" | "bounds";
+  // Overrides ORGAN_IMAGE_BLACK_AND_WHITE for this organ only.
+  blackAndWhite?: boolean;
+  responsive?: Partial<Record<ScreenSize, Partial<OrganImagePlacement>>>;
+}
+
+// Keyed by material slot name, same as the highlight maps. The sizes and
+// offsets below are starting guesses -- tune them per organ.
+// A file that doesn't exist is silently skipped (that region stays blank).
+const FEMALE_ORGAN_IMAGES: Record<string, OrganImage> = {
+  femalebrainfinal: { src: "/images/organs/brain_dots.webp", width: 0.26, opacity: 0.5, scale: .85, modelOffset: [.025, -0.05] },
+  femaleheart: { src: "/images/organs/heart_dots.webp", width: 0.2, opacity: 0.5, scale: .8,  modelOffset: [-.025, 0] },
+  femalelungs: { src: "/images/organs/lungs_dots.webp", width: 0.38, opacity: 0.3, scale: .8 , modelOffset: [.0, 0.05]},
+  femaleliver: { src: "/images/organs/liver_dots.webp", width: 0.26, opacity: 0.4, scale: .8, modelOffset: [0.05, -0.05] },
+  femalekidney: { src: "/images/organs/kidneys_dots.webp", width: 0.24, opacity: 0.4, scale: 1.2, modelOffset: [-0.01, 0]  },
+  femalethyroid: { src: "/images/organs/thyroid_dots.webp", width: 0.12, opacity: 0.4, scale: .7 },
+  femalearms: { src: "/images/organs/arms_dots.webp", width: 0.5, opacity: 0.4, scale: 1, center: "bounds" },
+  femalethighs: { src: "/images/organs/thighs_dots.webp", width: 0.4, opacity: 0.4, scale: 1 },
+  femalegenitals: { src: "/images/organs/genitals_dots.webp", width: 0.2, opacity: 0.4, scale: 1 },
+  femalecalves: { src: "/images/organs/calves_dots.webp", width: 0.3, opacity: 0.4, scale: 1 },
+};
+const MALE_ORGAN_IMAGES: Record<string, OrganImage> = {}; // none yet
+
+// --- Image tuning knobs (apply to EVERY organ image, on top of each
+// organ's own width / opacity above) ---
+// Overall size multiplier. 1 = the per-organ widths as written, 1.2 = 20%
+// bigger everywhere.
+const ORGAN_IMAGE_SCALE = .7;
+// Overall opacity multiplier, 0..1. 1 = fully opaque, 0.5 = half
+// see-through. Multiplied with an organ's own `opacity`, if it has one.
+const ORGAN_IMAGE_OPACITY = 1;
+// Extra size multiplier per screen size, by the browser window's width:
+// mobile below ORGAN_IMAGE_TABLET_FROM px, tablet up to
+// ORGAN_IMAGE_DESKTOP_FROM px, desktop from there (the defaults match
+// Tailwind's `sm` and `lg`, which the page layout switches on).
+const ORGAN_IMAGE_TABLET_FROM = 640;
+const ORGAN_IMAGE_DESKTOP_FROM = 1024;
+const ORGAN_IMAGE_RESPONSIVE_SCALE = { mobile: 1, tablet: 1, desktop: 1 };
+// An image is never drawn wider or taller than this fraction of the 3D
+// canvas: on a narrow screen a big image shrinks to fit instead of being
+// cut off at the edges. 1 = may fill the canvas edge to edge; a big
+// number (e.g. 99) turns this off.
+const ORGAN_IMAGE_MAX_SCREEN_FRACTION = 0.9;
+// (An image's `offset` is scaled together with its size, so it keeps
+// sitting on the same spot of the body at every size.)
+
+// Black & white mode: true = every organ image is drawn in greyscale
+// (its colors removed, light and dark kept), false = in its own colors.
+// One organ can go against this with its own `blackAndWhite: true/false`.
+const ORGAN_IMAGE_BLACK_AND_WHITE = true;
+// How long (seconds) a newly selected organ's image waits before it
+// starts fading in, so the camera and the pose get a head start and the
+// previous image is on its way out. 0 = no wait. The old image starts
+// fading out right away either way.
+const ORGAN_IMAGE_SHOW_DELAY = 0.45;
+// Fade speed of the images in/out, in roughly 1/seconds.
+const ORGAN_IMAGE_FADE_SPEED = 4;
+// How many of a region's points are tracked each frame to find its
+// center. More = a more exact center on huge regions, slower.
+const ORGAN_CENTER_SAMPLES = 96;
+
 // Man_Mesh clean3.glb's own mesh is ~4.96 units tall, but every camera target/
-// distance above (e.g. head target y=1.68) was tuned assuming a roughly
-// 1.8-unit-tall human, matching the old male_7.glb. Rather than re-tune
-// every camera number, we shrink the model itself on import. Cleanest
-// long-term fix is applying scale in Blender before export instead
-// (Object > Apply > Scale) -- then this constant can go back to 1.
-// (Used as the female model's scale; the man has his own, see MODELS.)
+// distance above was tuned assuming a roughly 1.8-unit-tall human, matching
+// the old male_7.glb. Rather than re-tune every camera number, we shrink the
+// model itself on import. Cleanest long-term fix is applying scale in Blender
+// before export instead (Object > Apply > Scale) -- then this constant can go
+// back to 1. (Used as the female model's scale; the man has his own, see
+// MODELS.)
 const MAN_MESH_SCALE = 1.8 / 4.96;
 
 // Everything that differs between the two models. The toggle picks one.
@@ -259,6 +366,7 @@ interface ModelConfig {
   poseActionNames: Record<ViewKey, string | null>;
   highlightRegionNames: Record<ViewKey, string | null>;
   highlightBlendRadiusOverrides: Record<string, number>;
+  organImages: Record<string, OrganImage>;
   // GLB units -> meters on screen (see MAN_MESH_SCALE).
   scale: number;
 }
@@ -270,6 +378,7 @@ const MODELS: Record<ModelKey, ModelConfig> = {
     poseActionNames: FEMALE_POSE_ACTION_NAMES,
     highlightRegionNames: FEMALE_HIGHLIGHT_REGION_NAMES,
     highlightBlendRadiusOverrides: FEMALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES,
+    organImages: FEMALE_ORGAN_IMAGES,
   },
   male: {
     label: "Male",
@@ -279,42 +388,33 @@ const MODELS: Record<ModelKey, ModelConfig> = {
     poseActionNames: MALE_POSE_ACTION_NAMES,
     highlightRegionNames: MALE_HIGHLIGHT_REGION_NAMES,
     highlightBlendRadiusOverrides: MALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES,
+    organImages: MALE_ORGAN_IMAGES,
   },
 };
 // Which model shows first.
 const DEFAULT_MODEL: ModelKey = "female";
 
-// How fast the color transition eases in when switching views, in
-// roughly 1/seconds -- same exponential-decay idiom as POSE_BLEND_SPEED
-// above, just driving a single blend scalar instead of animation weights.
-// Higher = snappier. 4 -> the dot colors are ~95% faded after ~0.75s.
+// How fast the dot fade eases in when switching views, in roughly
+// 1/seconds. Higher = snappier. 4 -> ~95% faded after ~0.75s.
 const HIGHLIGHT_FADE_SPEED = 4;
 
-
 // How fast each pose's blend weight converges toward its target (1 if
-// it's the active pose, 0 otherwise), in roughly 1/seconds. Lower = 
-// slower/dreamier transitions, higher = snappier. This is exponential
-// decay (see PosableModel's useFrame), so there's no fixed "done" time --
-// as a rule of thumb a pose is ~95% settled after about 3/POSE_BLEND_SPEED
-// seconds. 2.2 -> ~1.4s to mostly settle (slower than the previous fixed
-// 0.4s linear fade); try 1.5 for even slower, or 4+ for snappier.
+// it's the active pose, 0 otherwise), in roughly 1/seconds. Lower =
+// slower/dreamier transitions, higher = snappier. A pose is ~95% settled
+// after about 3/POSE_BLEND_SPEED seconds.
 const POSE_BLEND_SPEED = 2.2;
 
-// Scene fog color (kept light/neutral so it blends cleanly with the CSS
-// radial-gradient page background behind the transparent canvas).
+// Scene fog color (kept light/neutral so it blends cleanly with the page
+// background behind the transparent canvas).
 const FOG_COLOR = "#E6F5F9";
 
-// CSS radial gradient behind the canvas, centered at the bottom of the
-// viewport and fading from the pale cyan tint out to white.
-const PAGE_BACKGROUND =
-  "#f9f9f9";
+// Page background behind the canvas.
+const PAGE_BACKGROUND = "#f9f9f9";
 
 // ---------------------------------------------------------------------
 // Per-button grade ring. Mirrors the same S/A/B/C/D/E/F -> segments/color
 // mapping used for the big score ring on the main page, just drawn small
-// and placed next to each sidebar button's label. Kept self-contained
-// here (rather than imported from the page) since this component only
-// needs the score number, passed in via the `scores` prop below.
+// and placed next to each sidebar button's label.
 // ---------------------------------------------------------------------
 type StatusColor = "green" | "yellow" | "red";
 
@@ -345,9 +445,8 @@ const BUTTON_RING_SCORE_HEX: Record<StatusColor, string> = {
 };
 
 // Same grade -> {segments, color} mapping as the main page's
-// GRADE_RING_CONFIG: S = all 6 segments green, A = 5 segments green,
-// B = 4 segments yellow, C = 3 segments yellow, D = 2 segments red,
-// E = 1 segment red, F = 0 segments (all gray/incomplete).
+// GRADE_RING_CONFIG: S = all 6 segments green, A = 5 green, B = 4 yellow,
+// C = 3 yellow, D = 2 red, E = 1 red, F = 0 segments.
 const BUTTON_GRADE_RING_CONFIG: Record<string, { segments: number; color: StatusColor }> = {
   S: { segments: 6, color: "green" },
   A: { segments: 5, color: "green" },
@@ -359,9 +458,8 @@ const BUTTON_GRADE_RING_CONFIG: Record<string, { segments: number; color: Status
 };
 
 // Small segmented ring shown to the left of each sidebar button's label,
-// filled in according to that body part's grade (complete ring for a
-// top grade, fewer colored segments -- and more gray -- for a lower one),
-// with the grade letter itself centered inside the ring.
+// filled in according to that body part's grade, with the grade letter
+// itself centered inside the ring.
 function ButtonGradeRing({ score }: { score: number }) {
   const gradeLetter = getGradeLetter(score);
   const config = BUTTON_GRADE_RING_CONFIG[gradeLetter];
@@ -406,23 +504,20 @@ function ButtonGradeRing({ score }: { score: number }) {
 interface MeshVertexData {
   mesh: Mesh;
   // Bind-pose / local-space positions (NOT world space, and NOT affected
-  // by skinning -- a SkinnedMesh's geometry.attributes.position always
-  // stays in rest pose; the bone transforms happen in the vertex shader
-  // at render time). Using this space means the gradient only needs to be
+  // by skinning). Using this space means the gradient only needs to be
   // computed once, and stays correct no matter what pose is playing.
   positions: Float32Array;
-  // The original Blender material-slot name this submesh was assigned
-  // (e.g. "head", "hands", "heart", "default").
+  // The original Blender material-slot name this submesh was assigned.
   regionName: string;
 }
 
 /**
  * The Blender material-slot name a mesh was exported with. Read from the
  * GLB's original material the first time, then remembered in userData --
- * PosableModel swaps every mesh's material for an [occluder, dots] pair,
- * so after that the original material (and its name) is gone. Remembering
- * it keeps the highlight regions working if the setup effect runs again
- * on the same cached scene (React StrictMode, hot reload, remount).
+ * PosableModel swaps every mesh's material for an occluder, so after that
+ * the original material (and its name) is gone. Remembering it keeps the
+ * regions working if the setup effect runs again on the same cached scene
+ * (React StrictMode, hot reload, remount).
  */
 function getRegionName(mesh: Mesh): string {
   if (typeof mesh.userData.regionName !== "string") {
@@ -463,10 +558,7 @@ function collectMeshVertexData(scene: Group): MeshVertexData[] {
  * query radius -- meaning any point within `radius` of a query position
  * is guaranteed to be in one of the 3x3x3 neighboring cells. Lets
  * buildVertexHighlightFields below find "nearest seed point, if any
- * within radius" in roughly constant time per query instead of checking
- * every seed vertex against every mesh vertex (which, at tens of
- * thousands of vertices per side, would be far too slow to run in-browser
- * on load).
+ * within radius" in roughly constant time per query.
  */
 class PointGrid {
   private cellSize: number;
@@ -526,19 +618,16 @@ class PointGrid {
  * For each named region (e.g. "head"), and for every vertex on the WHOLE
  * model (every submesh, not just the one wearing that material slot),
  * computes a 0..1 weight: 1 right at the region, smoothly easing down to
- * 0 at `radius` units away, 0 beyond that. This is the piece that
- * replaces the old "swap this submesh's material" approach -- because the
- * weight is computed per-vertex from real geometric distance rather than
- * per-submesh, color can now bleed smoothly across a seam between two
- * material slots instead of cutting off exactly at it.
+ * 0 at `radius` units away, 0 beyond that. Because the weight is computed
+ * per-vertex from real geometric distance rather than per-submesh, the
+ * effect bleeds smoothly across a seam between two material slots.
  *
  * Returns a Map from mesh.uuid to { [regionName]: Float32Array }, one
  * weight per vertex of that mesh, aligned to that mesh's own vertex order
  * so it can be dropped straight into a BufferAttribute.
  *
  * `getRadius(region)` is called once per region so different regions can
- * use different blend radii (e.g. a tight halo for the thyroid, a wider
- * one for the liver) -- see HIGHLIGHT_BLEND_RADIUS_OVERRIDES.
+ * use different blend radii.
  */
 function buildVertexHighlightFields(
   scene: Group,
@@ -591,48 +680,36 @@ function buildVertexHighlightFields(
 // Real-time lights only look at which way a surface faces, never at
 // whether the body itself is in the way -- so the inside walls of the
 // nostrils (and ears, eye sockets, between fingers) get lit by every
-// light they face, often brighter than the skin around them. To fix
-// that, every vertex gets a 0..1 "how open is this point" value: 1 out
-// in the open, near 0 deep inside a cavity. The patched material then
-// multiplies ALL of the final light (every directional light + the
-// hemisphere fill, diffuse and specular) by it, so adding more soft fill
-// lights can never brighten the crevices again.
+// light they face. To fix that, every vertex gets a 0..1 "how open is
+// this point" value: 1 out in the open, near 0 deep inside a cavity. The
+// dot shader multiplies ALL of the light by it.
 //
 // Computed once on load by casting short rays from each vertex out over
-// the hemisphere around its normal (through a BVH so it stays fast), in
-// the GLB's rest pose -- like the highlight fields, it doesn't need
-// recomputing per pose. It runs in a background worker alongside the dot
-// placement (see dotBake.ts), is saved in the browser for return visits
-// (see dotBakeCache.ts), and fades in when done.
+// the hemisphere around its normal, in the GLB's rest pose. It runs in a
+// background worker alongside the dot placement (see dotBake.ts), is
+// saved in the browser for return visits (see dotBakeCache.ts), and fades
+// in when done.
 // ---------------------------------------------------------------------
 
-// Rays per vertex. 16 + the smoothing pass below gave the same darkness
-// distribution as 32 at half the cost. More = smoother, slower load.
+// Rays per vertex. More = smoother, slower load.
 const AO_RAY_COUNT = 16;
 // How far a ray looks for blocking geometry, in the GLB's own unscaled
-// units (the female model is ~4.43 units tall, so 0.1 is a few cm on the
-// rendered body). 0.08 only catches nostrils, ears and eye sockets; 0.25
-// (~9cm) also darkens broader areas -- armpits, under the chin and
-// breasts, the neck, between the legs -- for a more sculpted look.
+// units. 0.08 only catches nostrils, ears and eye sockets; 0.25 (~9cm)
+// also darkens broader areas -- armpits, under the chin and breasts, the
+// neck, between the legs -- for a more sculpted look.
 const AO_RAY_DISTANCE = 0.25;
 // Nudges each ray's start off the surface so it doesn't hit its own
 // triangle. Same units as AO_RAY_DISTANCE.
 const AO_RAY_BIAS = 0.002;
 // How dark the darkest crevices get: 0 = off, 1 = pure black. Clamped to
-// 0..1 in the shader -- above 1 the blend overshoots into negative light
-// and whole recessed areas (e.g. the eyes) turn solid black.
+// 0..1 in the shader.
 const AO_STRENGTH = 0.8;
-// Which baked values count as a crevice. Measured on the female model at
-// AO_RAY_DISTANCE 0.08: nostrils ~0.15-0.25, lip line ~0.25-0.5, eyes
-// (recessed behind the lids) ~0.6-0.7, open skin 1. Anything at or below
+// Which baked values count as a crevice. Anything at or below
 // AO_DARK_BELOW gets the full AO_STRENGTH darkening, anything at or above
-// AO_LIGHT_ABOVE gets none, smoothly in between -- so the nostrils always
-// go dark while the eyes stay as bright as the rest of the face. Raise
-// AO_LIGHT_ABOVE past ~0.7 to let the eye sockets darken too.
+// AO_LIGHT_ABOVE gets none, smoothly in between.
 const AO_DARK_BELOW = 0.02;
 const AO_LIGHT_ABOVE = 1.3;
-// Fade-in speed once the bake finishes, same exponential-decay idiom as
-// HIGHLIGHT_FADE_SPEED.
+// Fade-in speed once the bake finishes.
 const AO_FADE_SPEED = 3;
 
 /**
@@ -655,7 +732,7 @@ function collectBodyMeshes(scene: Group): Mesh[] {
  * the input to both the crevice-darkening bake and the dot placement (see
  * dotBake.ts), so a ray can hit (or be blocked by) any material slot.
  *
- * The shared space is the FIRST mesh's own geometry space, NOT the
+ * The shared space is the FIRST skinned mesh's own geometry space, NOT the
  * scene's: the body is skinned under an "Armature" node scaled ~0.026,
  * which the bones cancel out at render time -- so in scene space the
  * bind-pose geometry is ~38x too small and every AO_* / DOT_* distance
@@ -800,21 +877,18 @@ function buildMergedSurface(meshes: Mesh[]): MergedSurface {
 
 // ---------------------------------------------------------------------
 // Dot cloud. The body itself is never drawn in color. Instead, thousands
-// of points are pinned to its skin (placed once, on a regular grid, see
-// placeSurfaceDots), and each point is drawn as a flat round dot that
-// always faces the screen -- never tilted with the skin -- sized by how
-// brightly that spot is lit. Dots at the silhouette simply overhang it.
+// of points are pinned to its skin (placed once, on a regular grid), and
+// each point is drawn as a flat round dot that always faces the screen --
+// never tilted with the skin -- sized by how brightly that spot is lit.
+// Dots at the silhouette simply overhang it.
 // ---------------------------------------------------------------------
 
 // Sealed-cavity culling. Patching a hole (mouth, nostrils, eyes) with a
 // cap mesh leaves the old inner surfaces behind it, and the grid rays
-// would dot those too -- they then show through the cap, since they sit
-// within the occlusion tolerance behind it. So every candidate dot first
-// checks it can see out of the body: rays fan out over the side its
-// normal faces, then the other side (in case a normal is flipped), and the
-// dot is kept once DOT_ESCAPE_RAYS_NEEDED of them leave the model without
-// hitting anything. Open skin passes on its first rays; only dots sealed
-// inside a cavity hit on every ray and are dropped.
+// would dot those too. So every candidate dot first checks it can see out
+// of the body: rays fan out over the side its normal faces, then the
+// other side (in case a normal is flipped), and the dot is kept once
+// DOT_ESCAPE_RAYS_NEEDED of them leave the model without hitting anything.
 const DOT_ESCAPE_RAY_COUNT = 16; // per side
 // Needing more than one escape keeps a hairline gap between a cap and the
 // skin from rescuing the cavity behind it.
@@ -822,22 +896,18 @@ const DOT_ESCAPE_RAYS_NEEDED = 2;
 
 // Seams between the three grids. Each grid owns the skin that faces its
 // axis most, but the grids' lattices don't line up where two meet, which
-// left missing rows along the seams (worst on bulges: breasts, shoulders,
-// buttocks, backs of the legs). So each grid also dots a band past its own
-// region -- wherever its axis is at least DOT_SEAM_OVERLAP x the dominant
-// one -- and then any dot closer than DOT_MIN_GAP spacings to a better
-// placed one (from the grid facing that skin more head-on) is dropped.
-// Away from seams nothing changes; along them the rows meet without holes.
-// Measured: holes > 1 spacing wide went from 0.20% to 0.05% of the skin.
+// left missing rows along the seams. So each grid also dots a band past
+// its own region -- wherever its axis is at least DOT_SEAM_OVERLAP x the
+// dominant one -- and then any dot closer than DOT_MIN_GAP spacings to a
+// better placed one is dropped.
 const DOT_SEAM_OVERLAP = 0.9;
 const DOT_MIN_GAP = 0.75;
 // Dots whose grid isn't at least this many times more head-on than the
-// next grid count as "near a seam" (the overlap band itself reaches 1 /
-// DOT_SEAM_OVERLAP = 1.43; a little extra margin catches tight curves).
+// next grid count as "near a seam".
 const DOT_SEAM_BAND = 1.7;
-// Where a grid meets the skin at an angle, its dots spread out (1.4x at
-// 45 degrees). Each dot measures how far its neighbours are and grows by
-// that much (capped here), so slanted skin looks as full as the rest.
+// Where a grid meets the skin at an angle, its dots spread out. Each dot
+// measures how far its neighbours are and grows by that much (capped
+// here), so slanted skin looks as full as the rest.
 const DOT_SPREAD_MAX = 1.8;
 
 // All the knobs above, as handed to the background bake (dotBake.ts).
@@ -1055,6 +1125,9 @@ interface DotUniforms {
   uDotLightBright: { value: number };
   uDotHighlightGrow: { value: number };
   uDotHighlightOpacity: { value: number };
+  uDotColorHighlightOpacity: { value: number };
+  uImageModeFrom: { value: number };
+  uImageModeTo: { value: number };
   uDotOcclusionTolerance: { value: number };
   uReveal: { value: number };
   uBodyDepth: { value: Texture | null };
@@ -1091,6 +1164,12 @@ function createDotUniforms(): DotUniforms {
     uDotLightBright: { value: DOT_LIGHT_BRIGHT },
     uDotHighlightGrow: { value: DOT_HIGHLIGHT_GROW },
     uDotHighlightOpacity: { value: DOT_HIGHLIGHT_OPACITY },
+    uDotColorHighlightOpacity: { value: DOT_COLOR_HIGHLIGHT_OPACITY },
+    // 1 = the region's organ image is shown (its dots fade out), 0 = it
+    // isn't (its dots change color) -- for the region being faded FROM and
+    // the one being faded TO. Set when the view or "Hide organs" changes.
+    uImageModeFrom: { value: 0 },
+    uImageModeTo: { value: 0 },
     uDotOcclusionTolerance: { value: DOT_OCCLUSION_TOLERANCE },
     // 0 -> 1 fade-in once the dots have been placed.
     uReveal: { value: 0 },
@@ -1165,6 +1244,9 @@ const DOT_VERTEX_SHADER = /* glsl */ `
   uniform float uDotLightBright;
   uniform float uDotHighlightGrow;
   uniform float uDotHighlightOpacity;
+  uniform float uDotColorHighlightOpacity;
+  uniform float uImageModeFrom;
+  uniform float uImageModeTo;
   uniform float uDotOcclusionTolerance;
   uniform float uReveal;
   uniform sampler2D uBodyDepth;
@@ -1279,12 +1361,21 @@ const DOT_VERTEX_SHADER = /* glsl */ `
 
     // 1 = in shadow (biggest, strongest dot), 0 = fully lit (smallest).
     float shade = 1.0 - smoothstep( uDotLightDark, uDotLightBright, lightLevel );
-    float highlight = clamp( mix( aHighlightFrom, aHighlightTo, uBlend ), 0.0, 1.0 );
+    float highlightFrom = aHighlightFrom * ( 1.0 - uBlend );
+    float highlightTo = aHighlightTo * uBlend;
+    float highlight = clamp( highlightFrom + highlightTo, 0.0, 1.0 );
+    // How much of that highlight is "fade out under the organ image" and
+    // how much is "change color" (image hidden, or none for the region).
+    float fadeWeight = clamp( highlightFrom * uImageModeFrom + highlightTo * uImageModeTo, 0.0, 1.0 );
+    float colorWeight = clamp( highlight - fadeWeight, 0.0, 1.0 );
     // Scaled up where the grid's dots are spread out (slanted skin).
     float radius = mix( uDotMinRadius, uDotMaxRadius, shade ) * aSpread;
     radius = max( radius * mix( 1.0, uDotHighlightGrow, highlight ), 0.0 );
     float opacity = mix( uDotMinOpacity, uDotMaxOpacity, shade );
-    opacity = clamp( mix( opacity, max( opacity, uDotHighlightOpacity ), highlight ), 0.0, 1.0 );
+    // Inside the selected region the dots either get stronger (and
+    // colored, below) or fade out under the organ image.
+    opacity = clamp( mix( opacity, max( opacity, uDotColorHighlightOpacity ), colorWeight ), 0.0, 1.0 );
+    opacity *= mix( 1.0, uDotHighlightOpacity, fadeWeight );
 
     // Dots on skin facing away from the camera are on the far side of
     // the body -- hide them (softly, so nothing pops at the silhouette).
@@ -1329,7 +1420,7 @@ const DOT_VERTEX_SHADER = /* glsl */ `
     vRadiusPx = drawPx;
     vQuadPx = quadPx;
     vAlpha = alpha;
-    vColor = mix( uDotColor, uHighlightColor, highlight );
+    vColor = mix( uDotColor, uHighlightColor, colorWeight );
   }
 `;
 
@@ -1372,8 +1463,7 @@ function createDotCloudMaterial(
     transparent: true,
     // The quads are built facing the screen in view space, so they're
     // never really back-facing -- but three flips the winding test for
-    // mirrored meshes (negative scale, e.g. a cap mirrored across the
-    // face), which would cull every dot on them.
+    // mirrored meshes (negative scale), which would cull every dot on them.
     side: DoubleSide,
     // Visibility comes from the body depth texture instead (see the
     // vertex shader), so a dot is never cut by the skin it sits on and
@@ -1441,6 +1531,85 @@ function createDotCloud(data: DotCloudData, uniforms: DotUniforms): Mesh {
   return dots;
 }
 
+// ---------------------------------------------------------------------
+// Organ image overlays. A flat picture (a THREE.Sprite, so it always
+// faces the camera) floating over the model. It is pinned to the center
+// of the selected region and sized in meters -- see OrganImage above for
+// every tunable.
+//
+// The center is found every frame from a sample of the region's own
+// vertices, run through the skeleton (so it follows every pose), and
+// either averaged ("mean") or taken as the middle of their bounding box
+// ("bounds"). The image is never mapped onto the skin, and it is drawn
+// without a depth test, so nothing on the body can cut it.
+// ---------------------------------------------------------------------
+interface OrganOverlay {
+  region: string;
+  cfg: OrganImage;
+  sprite: Sprite;
+  material: SpriteMaterial;
+  texture: Texture;
+  // The image file's own width / height.
+  aspect: number;
+  // The region's points tracked each frame to find its center.
+  samples: { mesh: Mesh; index: number }[];
+  // 0..1 fade amount (eased toward 1 for the active region, 0 otherwise).
+  fade: number;
+}
+
+const _sample = new Vector3();
+const _sum = new Vector3();
+const _min = new Vector3();
+const _max = new Vector3();
+const _center = new Vector3();
+const _right = new Vector3();
+const _up = new Vector3();
+const _back = new Vector3();
+
+/** An even spread of up to `maxSamples` vertices across the region's meshes. */
+function pickRegionSamples(meshes: Mesh[], maxSamples: number) {
+  let total = 0;
+  for (const mesh of meshes) total += mesh.geometry.attributes.position.count;
+  const stride = Math.max(1, Math.ceil(total / maxSamples));
+  const samples: { mesh: Mesh; index: number }[] = [];
+  let counter = 0;
+  for (const mesh of meshes) {
+    const count = mesh.geometry.attributes.position.count;
+    for (let i = 0; i < count; i++, counter++) {
+      if (counter % stride === 0) samples.push({ mesh, index: i });
+    }
+  }
+  return samples;
+}
+
+/**
+ * The region's center in world space, right now (skinning included).
+ * Needs every world matrix to be up to date, so call it after the scene's
+ * updateMatrixWorld.
+ */
+function computeRegionCenter(
+  samples: OrganOverlay["samples"],
+  mode: "mean" | "bounds",
+  target: Vector3
+): boolean {
+  if (samples.length === 0) return false;
+  _sum.set(0, 0, 0);
+  _min.set(Infinity, Infinity, Infinity);
+  _max.set(-Infinity, -Infinity, -Infinity);
+  for (const { mesh, index } of samples) {
+    _sample.fromBufferAttribute(mesh.geometry.attributes.position, index);
+    const skinned = mesh as SkinnedMesh;
+    if (skinned.isSkinnedMesh && skinned.skeleton) skinned.applyBoneTransform(index, _sample);
+    _sample.applyMatrix4(mesh.matrixWorld);
+    _sum.add(_sample);
+    _min.min(_sample);
+    _max.max(_sample);
+  }
+  if (mode === "bounds") target.copy(_min).add(_max).multiplyScalar(0.5);
+  else target.copy(_sum).divideScalar(samples.length);
+  return true;
+}
+
 /**
  * Rigged, posable model driven by view/button state. Looks up an
  * AnimationAction by name (via the model's poseActionNames, see MODELS) for
@@ -1453,28 +1622,27 @@ function createDotCloud(data: DotCloudData, uniforms: DotUniforms): Mesh {
  * 1 (if it's the current target) or 0 (otherwise) -- see the useFrame
  * loop below. This is deliberately NOT a single "from/to" pair: pairing
  * up just two actions per click is what caused the earlier "stuck
- * mid-transition" bug -- if you clicked a third pose before the first
- * fade-out finished, that first pose's weight had nowhere left to go and
- * froze mid-fade, forever blended into everything after it. Recomputing
- * every action's weight independently every frame means there's no
- * "abandoned" state to get stuck in, no matter how fast or in what order
- * you click.
+ * mid-transition" bug. Recomputing every action's weight independently
+ * every frame means there's no "abandoned" state to get stuck in, no
+ * matter how fast or in what order you click.
  *
- * The convergence itself is exponential decay toward the target weight
- * (the same `1 - Math.exp(-delta * k)` idiom CameraRig below uses for
- * camera easing) -- which is inherently an ease-out curve: fast initial
- * movement that tapers off as it approaches the target. POSE_BLEND_SPEED
- * controls how slow/fast that taper is.
+ * The convergence itself is exponential decay toward the target weight,
+ * which is inherently an ease-out curve. POSE_BLEND_SPEED controls how
+ * slow/fast that taper is.
  *
- * The camera itself is untouched here; CameraRig (unchanged, rendered
- * alongside this in ModelScene) keeps handling all camera movement.
+ * The camera itself is untouched here; CameraRig keeps handling all
+ * camera movement.
  */
 function PosableModel({
   model,
   view,
+  hideOrgans,
 }: {
   model: ModelConfig;
   view: ViewKey;
+  // "Hide organs": no organ images; the selected region's dots change
+  // color instead of fading out.
+  hideOrgans: boolean;
 }) {
   // Three.js's AnimationAction API (`.play()`, `.setEffectiveWeight()`,
   // etc.) is inherently mutation-based -- that's just how it works, not a
@@ -1483,11 +1651,16 @@ function PosableModel({
   "use no memo";
 
   const groupRef = useRef<Group>(null);
+  // Holds the organ image sprites. Separate from the model's group so the
+  // images are NOT scaled by the model's scale: their size is in real
+  // meters, and they are placed in world space.
+  const overlayGroupRef = useRef<Group>(null);
   const {
     path: modelPath,
     poseActionNames,
     highlightRegionNames,
     highlightBlendRadiusOverrides,
+    organImages,
   } = model;
   const { scene, animations } = useGLTF(modelPath);
   const { actions, names } = useAnimations(animations, groupRef);
@@ -1515,8 +1688,13 @@ function PosableModel({
   const revealTarget = useRef(0);
   // The dot clouds currently in the scene (hidden during the depth pass).
   const dotCloudsRef = useRef<Mesh[]>([]);
-  // Highlight region of the current view, so dot clouds created mid-way
-  // start out with the right colors.
+  // The organ image sprites currently in the scene.
+  const overlaysRef = useRef<OrganOverlay[]>([]);
+  // Regions whose image has actually loaded. Only those fade their dots;
+  // a region without a (working) image changes color instead.
+  const [imageRegions, setImageRegions] = useState<ReadonlySet<string>>(() => new Set());
+  // Region of the current view, so dot clouds created mid-way start out
+  // with the right fade, and so the matching image is the one shown.
   const activeRegionRef = useRef<string | null>(null);
 
   // The body's depth, rendered every frame before the dots (see the
@@ -1566,12 +1744,10 @@ function PosableModel({
   //
   // This same effect also computes the smooth per-vertex highlight fields
   // (buildVertexHighlightFields), which the dots pick up when they're
-  // placed -- both are one-time, geometry-driven setup, so they key off
-  // [scene] only (not [view]).
+  // placed -- both are one-time, geometry-driven setup.
   //
   // A layout effect, not a plain one: it runs before the canvas draws its
-  // next frame, so the GLB is never drawn with its own materials (that
-  // used to flash the bare, unlit model in its default pose on load).
+  // next frame, so the GLB is never drawn with its own materials.
   useLayoutEffect(() => {
     const regionNames = Array.from(
       new Set(
@@ -1636,7 +1812,7 @@ function PosableModel({
         const dots = createDotCloud(data, dotUniforms);
 
         // Carry the per-vertex highlight fields over to the dots, and
-        // start them on the current view's colors.
+        // start them on the current view's region.
         const sourceFields = highlightFieldsRef.current.get(data.source.uuid) ?? {};
         const dotFields: Record<string, Float32Array> = {};
         for (const [region, values] of Object.entries(sourceFields)) {
@@ -1719,6 +1895,92 @@ function PosableModel({
     };
   }, [scene, dotUniforms, modelPath]);
 
+  // Loads each organ's image and creates its floating sprite. A missing
+  // image is silently skipped, so that region just stays blank. The
+  // sprite starts invisible; useFrame below places it on the region's
+  // center and fades it in when its region is the active one.
+  useEffect(() => {
+    const parent = overlayGroupRef.current;
+    if (!parent) return;
+    let cancelled = false;
+    const created: OrganOverlay[] = [];
+    const loader = new TextureLoader();
+    const bodyMeshes = collectBodyMeshes(scene);
+
+    for (const [region, cfg] of Object.entries(organImages)) {
+      const meshes = bodyMeshes.filter((mesh) => getRegionName(mesh) === region);
+      if (meshes.length === 0) continue;
+      const samples = pickRegionSamples(meshes, ORGAN_CENTER_SAMPLES);
+
+      loader.load(
+        cfg.src,
+        (texture) => {
+          if (cancelled) {
+            texture.dispose();
+            return;
+          }
+          texture.colorSpace = SRGBColorSpace;
+          const image = texture.image as { width: number; height: number };
+          const aspect = image.width / image.height || 1;
+
+          const material = new SpriteMaterial({
+            map: texture,
+            transparent: true,
+            opacity: 0,
+            rotation: ((cfg.rotation ?? 0) * Math.PI) / 180,
+            // Drawn over the model, never cut by it.
+            depthTest: false,
+            depthWrite: false,
+            fog: false,
+            toneMapped: false,
+          });
+          if (cfg.blackAndWhite ?? ORGAN_IMAGE_BLACK_AND_WHITE) {
+            // Replace the picture's color with its brightness.
+            material.onBeforeCompile = (shader) => {
+              shader.fragmentShader = shader.fragmentShader.replace(
+                "#include <map_fragment>",
+                `#include <map_fragment>
+                diffuseColor.rgb = vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) );`
+              );
+            };
+            // Its own shader program, not shared with the colored sprites.
+            material.customProgramCacheKey = () => "organ-image-bw";
+          }
+          const sprite = new Sprite(material);
+          sprite.name = `${region}-organ-image`;
+          // The sprite always faces the camera. Its size is set every
+          // frame (see the render pass), from the image knobs.
+          // Which point of the image sits on the region's center.
+          const [anchorX, anchorY] = cfg.anchor ?? [0.5, 0.5];
+          sprite.center.set(anchorX, anchorY);
+          sprite.frustumCulled = false;
+          // After the dots (10).
+          sprite.renderOrder = 20;
+          sprite.visible = false;
+          parent.add(sprite);
+
+          created.push({ region, cfg, sprite, material, texture, aspect, samples, fade: 0 });
+          overlaysRef.current = [...created];
+          setImageRegions((regions) => new Set(regions).add(region));
+        },
+        undefined,
+        () => {
+          /* image missing -> leave this region blank, no error */
+        }
+      );
+    }
+
+    return () => {
+      cancelled = true;
+      for (const overlay of created) {
+        overlay.sprite.removeFromParent();
+        overlay.material.dispose();
+        overlay.texture.dispose();
+      }
+      overlaysRef.current = [];
+    };
+  }, [scene, organImages]);
+
   // Button click (or initial mount) -- just record which pose SHOULD be
   // active. All the actual weight blending happens continuously in
   // useFrame below, driven off this ref, so this effect does no direct
@@ -1735,19 +1997,30 @@ function PosableModel({
     activeActionName.current = targetName;
   }, [view, actions, names, modelPath, poseActionNames]);
 
-  // Re-target the dot color toward whichever region matches the active
-  // view: that region's dots fade to HIGHLIGHT_COLOR while the previous
-  // region's fade back to DOT_COLOR, at the same time. Rather than
-  // snapping instantly, this freezes wherever the PREVIOUS blend had
-  // actually gotten to (in case a rapid click interrupted an in-progress
-  // fade) as the new starting point, then lets useFrame below ease uBlend
-  // from 0 back to 1 -- same "no stuck mid-transition" reasoning as the
-  // pose blending above, just for color.
+  // Re-target the dot fade toward whichever region matches the active
+  // view: that region's dots fade out while the previous region's fade
+  // back in, at the same time. Rather than snapping instantly, this
+  // freezes wherever the PREVIOUS blend had actually gotten to (in case a
+  // rapid click interrupted an in-progress fade) as the new starting
+  // point, then lets useFrame below ease uBlend from 0 back to 1.
   useEffect(() => {
     const activeRegion = highlightRegionNames[view];
     activeRegionRef.current = activeRegion;
     const fieldsByMesh = highlightFieldsRef.current;
     const blendSoFar = dotUniforms.uBlend.value;
+
+    // Same freeze for "fade or color": the new region fades its dots only
+    // if its image is going to show. With no region (Full Body) nothing is
+    // faded TO, so the mode just stays put.
+    const modeSoFar =
+      dotUniforms.uImageModeFrom.value +
+      (dotUniforms.uImageModeTo.value - dotUniforms.uImageModeFrom.value) * blendSoFar;
+    dotUniforms.uImageModeFrom.value = modeSoFar;
+    dotUniforms.uImageModeTo.value = !activeRegion
+      ? modeSoFar
+      : !hideOrgans && imageRegions.has(activeRegion)
+        ? 1
+        : 0;
 
     let warnedMissingRegion = false;
 
@@ -1790,7 +2063,7 @@ function PosableModel({
     });
 
     dotUniforms.uBlend.value = 0;
-  }, [view, scene, modelPath, dotUniforms, highlightRegionNames]);
+  }, [view, scene, modelPath, dotUniforms, highlightRegionNames, hideOrgans, imageRegions]);
 
   useFrame((_state, delta) => {
     const activeName = activeActionName.current;
@@ -1832,7 +2105,7 @@ function PosableModel({
       }
     }
 
-    // Ease the dot-color blend scalar from 0 toward 1 every frame.
+    // Ease the dot-fade blend scalar from 0 toward 1 every frame.
     // Updating this one uniform is all it takes to fade every dot at
     // once, since they all share the same uniforms object (see
     // dotUniforms / createDotCloudMaterial).
@@ -1854,7 +2127,8 @@ function PosableModel({
   // also guarantees this runs AFTER every other useFrame this frame -- in
   // particular the animation mixer and the camera rig -- so the body depth
   // below always matches the exact pose and camera the dots are drawn
-  // with (no one-frame lag during pose changes).
+  // with (no one-frame lag during pose changes). For the same reason the
+  // organ images are placed here, once the pose and camera are final.
   //
   // Depth passes, each only when its picture would actually change:
   // - the key light's shadow map: when the body moves (pose);
@@ -1870,8 +2144,12 @@ function PosableModel({
     view: new Float32Array(32),
     hasShadow: false,
     hasBodyDepth: false,
+    // Which region the organ images last saw as selected, and how long
+    // (seconds) it has been selected for -- see ORGAN_IMAGE_SHOW_DELAY.
+    imageRegion: null as string | null,
+    imageRegionAge: 0,
   }));
-  useFrame((state) => {
+  useFrame((state, delta) => {
     const { gl, camera } = state;
 
     gl.getDrawingBufferSize(drawingBufferSize);
@@ -1942,13 +2220,92 @@ function PosableModel({
       for (const dots of clouds) dots.visible = true;
     }
 
+    // Organ images: fade the active region's in and every other one out,
+    // and pin each visible one to its region's current center. The
+    // sprites live outside the GLB scene, so the depth passes above never
+    // see them.
+    const ok = 1 - Math.exp(-delta * ORGAN_IMAGE_FADE_SPEED);
+    camera.matrixWorld.extractBasis(_right, _up, _back);
+    const windowWidth = window.innerWidth;
+    const screenSize: ScreenSize =
+      windowWidth < ORGAN_IMAGE_TABLET_FROM
+        ? "mobile"
+        : windowWidth < ORGAN_IMAGE_DESKTOP_FROM
+          ? "tablet"
+          : "desktop";
+    const responsiveScale = ORGAN_IMAGE_RESPONSIVE_SCALE[screenSize];
+    // Canvas height in meters, per meter of distance from the camera.
+    const viewHeightPerDistance =
+      (2 * Math.tan((perspective.fov * Math.PI) / 360)) / (perspective.zoom || 1);
+    if (passState.imageRegion !== activeRegionRef.current) {
+      passState.imageRegion = activeRegionRef.current;
+      passState.imageRegionAge = 0;
+    } else {
+      passState.imageRegionAge += delta;
+    }
+    const imageReady = passState.imageRegionAge >= ORGAN_IMAGE_SHOW_DELAY;
+    for (const overlay of overlaysRef.current) {
+      const target =
+        !hideOrgans && imageReady && overlay.region === activeRegionRef.current ? 1 : 0;
+      overlay.fade += (target - overlay.fade) * ok;
+      const show = overlay.fade > 0.003;
+      overlay.sprite.visible = show;
+      if (!show) continue;
+
+      // This screen size's values, where the organ lists any.
+      const placement = { ...overlay.cfg, ...overlay.cfg.responsive?.[screenSize] };
+
+      overlay.material.opacity = Math.min(
+        1,
+        Math.max(0, overlay.fade * (placement.opacity ?? 1) * ORGAN_IMAGE_OPACITY)
+      );
+      if (!computeRegionCenter(overlay.samples, overlay.cfg.center ?? "mean", _center)) {
+        overlay.sprite.visible = false;
+        continue;
+      }
+      // modelOffset: meters along the model's own axes (she stands
+      // unrotated in the world, so those are the world's axes too).
+      const [modelX, modelY, modelZ = 0] = placement.modelOffset ?? [0, 0];
+      _center.x += modelX;
+      _center.y += modelY;
+      _center.z += modelZ;
+      // Size: the organ's own width x the knobs, then shrunk if needed to
+      // fit the canvas at the distance it is seen from.
+      let scale = ORGAN_IMAGE_SCALE * responsiveScale * (placement.scale ?? 1);
+      const width = placement.width * scale;
+      const height = (placement.height ?? placement.width / overlay.aspect) * scale;
+      const distance = -_sample.copy(_center).sub(camera.position).dot(_back);
+      let fit = 1;
+      if (distance > 0) {
+        const viewHeight = distance * viewHeightPerDistance;
+        const viewWidth = viewHeight * perspective.aspect;
+        fit = Math.min(
+          1,
+          (ORGAN_IMAGE_MAX_SCREEN_FRACTION * viewWidth) / width,
+          (ORGAN_IMAGE_MAX_SCREEN_FRACTION * viewHeight) / height
+        );
+      }
+      scale *= fit;
+      overlay.sprite.scale.set(width * fit, height * fit, 1);
+      // offset: meters along the screen's right / up directions, so "up
+      // 0.05" always moves the picture up on screen.
+      const [offsetX, offsetY] = placement.offset ?? [0, 0];
+      overlay.sprite.position
+        .copy(_center)
+        .addScaledVector(_right, offsetX * scale)
+        .addScaledVector(_up, offsetY * scale);
+    }
+
     gl.render(state.scene, camera);
   }, 1);
 
   return (
-    <group ref={groupRef} scale={model.scale}>
-      <primitive object={scene} />
-    </group>
+    <>
+      <group ref={groupRef} scale={model.scale}>
+        <primitive object={scene} />
+      </group>
+      <group ref={overlayGroupRef} />
+    </>
   );
 }
 
@@ -2024,6 +2381,8 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
   // Which model is shown (the Female / Male toggle).
   const [modelKey, setModelKey] = useState<ModelKey>(DEFAULT_MODEL);
   const model = MODELS[modelKey];
+  // The "Hide organs" switch: off = organ images, on = colored dots.
+  const [hideOrgans, setHideOrgans] = useState(false);
 
   return (
     <div
@@ -2055,8 +2414,8 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
         <directionalLight position={RIM_LIGHT_POS} intensity={RIM_LIGHT_INTENSITY} />
 
         {/* Keyed by the model, so switching mounts the other one fresh
-            (its own dots, poses and highlights) and cleans up the old. */}
-        <PosableModel key={model.path} model={model} view={view} />
+            (its own dots, poses, highlights and images) and cleans up the old. */}
+        <PosableModel key={model.path} model={model} view={view} hideOrgans={hideOrgans} />
         <CameraRig view={view} />
 
         <ContactShadows
@@ -2068,42 +2427,60 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
         />
       </Canvas>
 
-      {/* <div className="pointer-events-none absolute inset-x-0 top-8 text-center">
-        <h1 className="text-3xl font-semibold tracking-tight text-slate-900">
-          3D Human
-        </h1>
-      </div> */}
+      <div className="absolute top-4 right-4 sm:top-6 sm:right-6 z-[1000] flex flex-col items-end gap-2">
+        {/* Female / Male model toggle. */}
+        <div className="flex items-center gap-1 rounded-full bg-white/50 p-1 shadow-md shadow-black/5 backdrop-blur-2xl">
+          {(Object.keys(MODELS) as ModelKey[]).map((key) => (
+            <button
+              key={key}
+              onClick={() => setModelKey(key)}
+              aria-pressed={modelKey === key}
+              className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${
+                modelKey === key
+                  ? "bg-white text-black shadow-sm shadow-black/5"
+                  : "text-black/50 hover:text-black"
+              }`}
+            >
+              {MODELS[key].label}
+            </button>
+          ))}
+        </div>
 
-      {/* Female / Male model toggle. */}
-      <div className="absolute top-4 right-4 sm:top-6 sm:right-6 z-[1000] flex items-center gap-1 rounded-full bg-white/50 p-1 shadow-md shadow-black/5 backdrop-blur-2xl">
-        {(Object.keys(MODELS) as ModelKey[]).map((key) => (
-          <button
-            key={key}
-            onClick={() => setModelKey(key)}
-            aria-pressed={modelKey === key}
-            className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${
-              modelKey === key
-                ? "bg-white text-black shadow-sm shadow-black/5"
-                : "text-black/50 hover:text-black"
+        {/* "Hide organs" switch. */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={hideOrgans}
+          onClick={() => setHideOrgans((hidden) => !hidden)}
+          className="flex items-center gap-2 rounded-full bg-white/50 py-1.5 pl-3 pr-1.5 text-sm font-medium text-black/70 shadow-md shadow-black/5 backdrop-blur-2xl transition-colors hover:text-black"
+        >
+          Hide organs
+          <span
+            className={`relative h-5 w-9 rounded-full transition-colors ${
+              hideOrgans ? "bg-[#24bd89]" : "bg-black/15"
             }`}
           >
-            {MODELS[key].label}
-          </button>
-        ))}
+            <span
+              className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                hideOrgans ? "translate-x-4" : ""
+              }`}
+            />
+          </span>
+        </button>
       </div>
 
       <div className="absolute bottom-0 left-0 w-full h-[10vh] z-[999] pointer-events-none">
-  <div className="w-full h-full bg-gradient-to-t from-[#f9f9f9] to-transparent" />
-</div>
+        <div className="w-full h-full bg-gradient-to-t from-[#f9f9f9] to-transparent" />
+      </div>
 
-      <div className="absolute  top-1/2 -translate-y-1/2 left-1 sm:left-2  flex flex-col items-start justify-center gap-2 sm:gap-3 px-2 sm:px-4">
+      <div className="absolute top-1/2 -translate-y-1/2 left-1 sm:left-2 flex flex-col items-start justify-center gap-2 sm:gap-3 px-2 sm:px-4">
         {(Object.keys(VIEWS) as ViewKey[]).map((key) => (
           <button
             key={key}
             onClick={() => onViewChange(key)}
-            className={`flex items-center gap-1.5 sm:gap-2 rounded-full border pl-1 pr-3 py-1.5 text-sm sm:pl-1 sm:pr-3 sm:py-1 sm:text-sm font-medium  transition-colors ${
+            className={`flex items-center gap-1.5 sm:gap-2 rounded-full border pl-1 pr-3 py-1.5 text-sm sm:pl-1 sm:pr-3 sm:py-1 sm:text-sm font-medium transition-colors ${
               view === key
-                ? "border-blue-400/0 bg-white/50 text-black shadow-md shadow-black/5 backdrop-blur-2xl  hover:text-black"
+                ? "border-blue-400/0 bg-white/50 text-black shadow-md shadow-black/5 backdrop-blur-2xl hover:text-black"
                 : "border-slate-300/0 bg-white/0 text-black/50 hover:bg-slate-100/0 hover:text-black"
             }`}
           >
@@ -2119,7 +2496,3 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
 // Both models load up front, so the toggle switches without a wait.
 useGLTF.preload(FEMALE_MODEL_PATH);
 useGLTF.preload(MALE_MODEL_PATH);
-
-// (Man_Mesh clean3.glb ships with no built-in animation clips named "arm"/"head"/
-// "heart" yet -- see chat for details. PosableModel above will still run
-// fine, it just won't visibly repose until the GLB has those 3 clips.)
