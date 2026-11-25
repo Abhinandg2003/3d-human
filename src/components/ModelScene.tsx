@@ -314,7 +314,7 @@ const FEMALE_ORGAN_IMAGES: Record<string, OrganImage> = {
 const MALE_ORGAN_IMAGES: Record<string, OrganImage> = {
   head3: { src: "/images/organs/brain_dots.webp", width: 0.26, opacity: 0.5, scale: .93, modelOffset: [.015, -0.055] },
   heart3: { src: "/images/organs/heart_dots.webp", width: 0.2, opacity: 0.5, scale: .85,  modelOffset: [-.008, 0] },
-  lungs3: { src: "/images/organs/lungs_dots.webp", width: 0.38, opacity: 0.25, scale: .9 , modelOffset: [.0, 0.07]},
+  lungs3: { src: "/images/organs/lungs_dots.webp", width: 0.38, opacity: 0.25, scale: .9 , modelOffset: [-0.004, 0.07]},
   liver3: { src: "/images/organs/liver_dots.webp", width: 0.26, opacity: 0.4, scale: .8, modelOffset: [0.01, -0.03] },
   kidney4: { src: "/images/organs/kidneys_dots.webp", width: 0.24, opacity: 0.4, scale: 1.3, modelOffset: [-0.01, 0]  },
   thyroid2: { src: "/images/organs/thyroid_dots.webp", width: 0.12, opacity: 0.4, scale: .7 },
@@ -356,6 +356,20 @@ const ORGAN_IMAGE_BLACK_AND_WHITE = true;
 // previous image is on its way out. 0 = no wait. The old image starts
 // fading out right away either way.
 const ORGAN_IMAGE_SHOW_DELAY = 0.45;
+// TV-glitch entrance: while an organ image fades in, horizontal strips of
+// it jump sideways at random, fast, and settle into place. No colors are
+// split. It costs nothing extra to draw (same single texture lookup).
+//   GLITCH          - true = on, false = plain fade in.
+//   GLITCH_DURATION - seconds until it has fully settled.
+//   GLITCH_SHIFT    - how far a strip can jump at the start, as a
+//                     fraction of the image's width (0.15 = 15%).
+//   GLITCH_BANDS    - how many horizontal strips the image is cut into.
+//   GLITCH_RATE     - how many times per second the strips re-shuffle.
+const ORGAN_IMAGE_GLITCH = true;
+const ORGAN_IMAGE_GLITCH_DURATION = 0.55;
+const ORGAN_IMAGE_GLITCH_SHIFT = 0.15;
+const ORGAN_IMAGE_GLITCH_BANDS = 18;
+const ORGAN_IMAGE_GLITCH_RATE = 24;
 // Fade speed of the images in/out, in roughly 1/seconds.
 const ORGAN_IMAGE_FADE_SPEED = 4;
 // How many of a region's points are tracked each frame to find its
@@ -1568,6 +1582,14 @@ interface OrganOverlay {
   samples: { mesh: Mesh; index: number }[];
   // 0..1 fade amount (eased toward 1 for the active region, 0 otherwise).
   fade: number;
+  // TV-glitch entrance (see ORGAN_IMAGE_GLITCH): whether this image was
+  // the one being shown last frame, seconds since it started showing, and
+  // the two values its shader reads -- strength (1 -> 0) and the current
+  // shuffle of the strips.
+  showing: boolean;
+  glitchAge: number;
+  glitch: { value: number };
+  glitchSeed: { value: number };
 }
 
 const _sample = new Vector3();
@@ -1947,18 +1969,43 @@ function PosableModel({
             fog: false,
             toneMapped: false,
           });
-          if (cfg.blackAndWhite ?? ORGAN_IMAGE_BLACK_AND_WHITE) {
-            // Replace the picture's color with its brightness.
-            material.onBeforeCompile = (shader) => {
-              shader.fragmentShader = shader.fragmentShader.replace(
+          // The image's own shader, with two small changes where it reads
+          // the picture: strips of it are shifted sideways while the glitch
+          // runs, and (in black & white mode) its color is replaced with
+          // its brightness.
+          const blackAndWhite = cfg.blackAndWhite ?? ORGAN_IMAGE_BLACK_AND_WHITE;
+          const glitch = { value: 0 };
+          const glitchSeed = { value: 0 };
+          material.onBeforeCompile = (shader) => {
+            shader.uniforms.uGlitch = glitch;
+            shader.uniforms.uGlitchSeed = glitchSeed;
+            shader.fragmentShader =
+              "uniform float uGlitch;\nuniform float uGlitchSeed;\n" +
+              shader.fragmentShader.replace(
                 "#include <map_fragment>",
-                `#include <map_fragment>
-                diffuseColor.rgb = vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) );`
+                `
+                vec2 glitchUv = vMapUv;
+                if ( uGlitch > 0.0 ) {
+                  float band = floor( glitchUv.y * ${ORGAN_IMAGE_GLITCH_BANDS.toFixed(1)} );
+                  float jump = fract( sin( band * 12.9898 + uGlitchSeed * 78.233 ) * 43758.5453 );
+                  // About half the strips jump each shuffle; the rest stay put.
+                  float moves = step( 0.5, fract( jump * 7.31 ) );
+                  glitchUv.x += ( jump - 0.5 ) * 2.0 * moves * uGlitch * ${ORGAN_IMAGE_GLITCH_SHIFT.toFixed(4)};
+                }
+                vec4 sampledDiffuseColor = texture2D( map, glitchUv );
+                // A strip pushed past the picture's edge shows nothing there.
+                sampledDiffuseColor.a *= step( 0.0, glitchUv.x ) * step( glitchUv.x, 1.0 );
+                diffuseColor *= sampledDiffuseColor;
+                ${
+                  blackAndWhite
+                    ? "diffuseColor.rgb = vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) );"
+                    : ""
+                }`
               );
-            };
-            // Its own shader program, not shared with the colored sprites.
-            material.customProgramCacheKey = () => "organ-image-bw";
-          }
+          };
+          // Its own shader program, not shared with any other sprite.
+          material.customProgramCacheKey = () =>
+            `organ-image-${blackAndWhite ? "bw" : "color"}-${ORGAN_IMAGE_GLITCH_BANDS}-${ORGAN_IMAGE_GLITCH_SHIFT}`;
           const sprite = new Sprite(material);
           sprite.name = `${region}-organ-image`;
           // The sprite always faces the camera. Its size is set every
@@ -1972,7 +2019,20 @@ function PosableModel({
           sprite.visible = false;
           parent.add(sprite);
 
-          created.push({ region, cfg, sprite, material, texture, aspect, samples, fade: 0 });
+          created.push({
+            region,
+            cfg,
+            sprite,
+            material,
+            texture,
+            aspect,
+            samples,
+            fade: 0,
+            showing: false,
+            glitchAge: 0,
+            glitch,
+            glitchSeed,
+          });
           overlaysRef.current = [...created];
           setImageRegions((regions) => new Set(regions).add(region));
         },
@@ -2261,6 +2321,14 @@ function PosableModel({
       const target =
         !hideOrgans && imageReady && overlay.region === activeRegionRef.current ? 1 : 0;
       overlay.fade += (target - overlay.fade) * ok;
+      // The glitch starts over each time this image starts to show, and
+      // eases out (strong at first, settling at the end).
+      if (target === 1 && !overlay.showing) overlay.glitchAge = 0;
+      overlay.showing = target === 1;
+      overlay.glitchAge += delta;
+      const settle = Math.max(0, 1 - overlay.glitchAge / ORGAN_IMAGE_GLITCH_DURATION);
+      overlay.glitch.value = ORGAN_IMAGE_GLITCH && target === 1 ? settle * settle : 0;
+      overlay.glitchSeed.value = Math.floor(overlay.glitchAge * ORGAN_IMAGE_GLITCH_RATE);
       const show = overlay.fade > 0.003;
       overlay.sprite.visible = show;
       if (!show) continue;
