@@ -299,11 +299,11 @@ interface OrganImage extends OrganImagePlacement {
 // A file that doesn't exist is silently skipped (that region stays blank).
 const FEMALE_ORGAN_IMAGES: Record<string, OrganImage> = {
   femalebrainfinal: { src: "/images/organs/brain_dots.webp", width: 0.26, opacity: 0.5, scale: .85, modelOffset: [.025, -0.05] },
-  femaleheart: { src: "/images/organs/heart_dots.webp", width: 0.2, opacity: 0.5, scale: .8,  modelOffset: [-.025, 0] },
-  femalelungs: { src: "/images/organs/lungs_dots.webp", width: 0.38, opacity: 0.3, scale: .8 , modelOffset: [.0, 0.05]},
-  femaleliver: { src: "/images/organs/liver_dots.webp", width: 0.26, opacity: 0.4, scale: .8, modelOffset: [0.05, -0.05] },
-  femalekidney: { src: "/images/organs/kidneys_dots.webp", width: 0.24, opacity: 0.4, scale: 1.2, modelOffset: [-0.01, 0]  },
-  femalethyroid: { src: "/images/organs/thyroid_dots.webp", width: 0.12, opacity: 0.4, scale: .7 },
+  femaleheart: { src: "/images/organs/heart_dots.webp", width: 0.2, opacity: 0.6, scale: .8,  modelOffset: [-.025, 0] },
+  femalelungs: { src: "/images/organs/lungs_dots.webp", width: 0.38, opacity: 0.4, scale: .8 , modelOffset: [.0, 0.05]},
+  femaleliver: { src: "/images/organs/liver_dots.webp", width: 0.26, opacity: 0.6, scale: .8, modelOffset: [0.05, -0.05] },
+  femalekidney: { src: "/images/organs/kidneys_dots.webp", width: 0.24, opacity: 0.6, scale: 1.2, modelOffset: [-0.01, 0]  },
+  femalethyroid: { src: "/images/organs/thyroid_dots.webp", width: 0.12, opacity: 0.6, scale: .7 },
   femalearms: { src: "/images/organs/arms_dots.webp", width: 0.5, opacity: 0.4, scale: 1, center: "bounds" },
   femalethighs: { src: "/images/organs/thighs_dots.webp", width: 0.4, opacity: 0.4, scale: 1 },
   femalegenitals: { src: "/images/organs/genitals_dots.webp", width: 0.2, opacity: 0.4, scale: 1 },
@@ -313,11 +313,11 @@ const FEMALE_ORGAN_IMAGES: Record<string, OrganImage> = {
 // material slot names. Tune them separately from hers here.
 const MALE_ORGAN_IMAGES: Record<string, OrganImage> = {
   head3: { src: "/images/organs/brain_dots.webp", width: 0.26, opacity: 0.5, scale: .93, modelOffset: [.015, -0.055] },
-  heart3: { src: "/images/organs/heart_dots.webp", width: 0.2, opacity: 0.5, scale: .85,  modelOffset: [-.008, 0] },
-  lungs3: { src: "/images/organs/lungs_dots.webp", width: 0.38, opacity: 0.25, scale: .9 , modelOffset: [-0.004, 0.07]},
-  liver3: { src: "/images/organs/liver_dots.webp", width: 0.26, opacity: 0.4, scale: .8, modelOffset: [0.01, -0.03] },
-  kidney4: { src: "/images/organs/kidneys_dots.webp", width: 0.24, opacity: 0.4, scale: 1.3, modelOffset: [-0.01, 0]  },
-  thyroid2: { src: "/images/organs/thyroid_dots.webp", width: 0.12, opacity: 0.4, scale: .7 },
+  heart3: { src: "/images/organs/heart_dots.webp", width: 0.2, opacity: 0.6, scale: .85,  modelOffset: [-.008, 0] },
+  lungs3: { src: "/images/organs/lungs_dots.webp", width: 0.38, opacity: 0.3, scale: .9 , modelOffset: [-0.004, 0.07]},
+  liver3: { src: "/images/organs/liver_dots.webp", width: 0.26, opacity: 0.6, scale: .8, modelOffset: [0.01, -0.03] },
+  kidney4: { src: "/images/organs/kidneys_dots.webp", width: 0.24, opacity: 0.6, scale: 1.3, modelOffset: [-0.01, 0]  },
+  thyroid2: { src: "/images/organs/thyroid_dots.webp", width: 0.12, opacity: 0.6, scale: .7 },
   hands5: { src: "/images/organs/arms_dots.webp", width: 0.5, opacity: 0.4, scale: 1, center: "bounds" },
   thighs: { src: "/images/organs/thighs_dots.webp", width: 0.4, opacity: 0.4, scale: 1 },
   genitals: { src: "/images/organs/genitals_dots.webp", width: 0.2, opacity: 0.4, scale: 1 },
