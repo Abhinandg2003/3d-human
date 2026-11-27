@@ -49,7 +49,7 @@ export type ViewKey =
   | "head2"
   | "mental"
   | "eyes"
-  | "gi"
+  | "oral"
   | "thyroid"
   | "heart"
   | "blood"
@@ -67,7 +67,7 @@ type Vector3Tuple = [number, number, number];
 
 // The two rigged/posable models the toggle switches between (see MODELS
 // below for each one's pose and material names).
-const FEMALE_MODEL_PATH = "/female-rigged-nomeshsculpt3-meshedited-thigh.glb";
+const FEMALE_MODEL_PATH = "/female-rigged-nomeshsculpt_pancreas.glb";
 const MALE_MODEL_PATH = "/Man_Mesh_clean9.glb";
 
 const VIEWS: Record<
@@ -81,7 +81,7 @@ const VIEWS: Record<
   eyes: { label: "Eyes", camPos: [0, 1.52, 0.6], target: [0, 1.5, 0] },
   // Seen from her left side, so her face points to the left of the screen
   // -- the same way the GI & oral picture is drawn.
-  gi: { label: "GI & Oral", camPos: [0.75, 1.46, 0.05], target: [0, 1.44, 0.02] },
+  oral: { label: "GI & Oral", camPos: [0.75, 1.46, 0.05], target: [0, 1.44, 0.02] },
   thyroid: { label: "Thyroid", camPos: [0.25, 1.15, 0.7], target: [0, 1.4, 0] },
   bones: { label: "Bone & Muscle", camPos: [-0, 0.65, 1.25], target: [0, 0.75, 0] },
   heart: { label: "Heart", camPos: [0.45, 1.45, 1.25], target: [0, 1.38, 0] },
@@ -113,7 +113,7 @@ const FEMALE_POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   head2: "default",
   mental: "default",
   eyes: "default",
-  gi: "default",
+  oral: "default",
   thyroid: "head2",
   heart: "default",
   blood: "default",
@@ -133,7 +133,7 @@ const MALE_POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   head2: "head",
   mental: "head",
   eyes: "default",
-  gi: "default",
+  oral: "default",
   thyroid: "head",
   heart: "default",
   blood: "default",
@@ -145,6 +145,17 @@ const MALE_POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   bones: "default",
   feet: "default",
   // arms: "arm",
+};
+
+// Only while "Hide organs" is ON: regions that borrow ANOTHER region's
+// dots for the color highlight. Written as  region: region-to-color.
+// Blood has no slot of its own in either GLB, so with the images hidden
+// it colors the heart's dots instead of nothing. With "Hide organs" off
+// this is ignored (blood shows its own image, as usual). Remove a line
+// once that region has its own slot painted.
+const HIDE_ORGANS_DOT_REGION: Record<string, string> = {
+  femaleblood: "femaleheart",
+  blood: "heart3",
 };
 
 // Maps each view/button to the name of the MATERIAL SLOT (assigned to a
@@ -159,15 +170,15 @@ const FEMALE_HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
   head2: "femalebrainfinal",
   mental: "femalebrainfinal",
-  // TODO(material slots): "femaleeyes", "femalegi", "femaleblood" and
+  // TODO(material slots): "femaleeyes", "femaleoral", "femaleblood" and
   // "femalepancreas" don't exist in the GLB yet. Until they do, their
   // images sit at the fixed `position` given in FEMALE_ORGAN_IMAGES and no
   // dots fade. Rename these to the real slot names once they are painted.
   eyes: "femaleeyes",
-  gi: "femalegi",
+  oral: "femaleoral",
   thyroid: "femalethyroid",
   heart: "femaleheart",
-  blood: "femaleheart",
+  blood: "femaleblood",
   lungs: "femalelungs",
   liver: "femaleliver",
   pancreas: "femalepancreas",
@@ -184,10 +195,10 @@ const MALE_HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
   head2: "head3",
   mental: "head3",
-  // TODO(material slots): "eyes", "gi", "blood" and "pancreas" don't
+  // TODO(material slots): "eyes", "oral", "blood" and "pancreas" don't
   // exist in the GLB yet -- see the note in the female map above.
   eyes: "eyes",
-  gi: "gi",
+  oral: "oral",
   thyroid: "thyroid2",
   heart: "heart3",
   blood: "blood",
@@ -268,6 +279,7 @@ const FEMALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
   femalethighs: 0.15,
   femalegenitals: 0.15,
   femalecalves: 0.15,
+  femaleoral: 0.15,
 };
 
 const MALE_HIGHLIGHT_BLEND_RADIUS_OVERRIDES: Record<string, number> = {
@@ -351,6 +363,10 @@ interface OrganImage extends OrganImagePlacement {
   // the image is then pinned to the slot's center and follows the pose.
   // modelOffset / offset are still added on top either way.
   position?: [number, number, number];
+  // "position" = always sit at `position`, even when the model HAS a slot
+  // with this name (the slot then only fades the dots). Default "slot" =
+  // pinned to the slot's center whenever the slot exists.
+  pinTo?: "slot" | "position";
   // Overrides ORGAN_IMAGE_BLACK_AND_WHITE for this organ only.
   blackAndWhite?: boolean;
   // Overrides ORGAN_IMAGE_COLOR for this organ only (null = its own colors).
@@ -388,16 +404,16 @@ function mirrorOrganImage(cfg: OrganImage): OrganImage {
 // A file that doesn't exist is silently skipped (that region stays blank).
 const FEMALE_ORGAN_IMAGES: Record<string, OrganImage> = {
   femalebrainfinal: { src: "/images/organs/brain.webp", width: 0.26, opacity: 0.25, scale: .85, modelOffset: [.025, -0.05] },
-  femaleeyes: { src: "/images/organs/eyes.webp", width: 0.12, opacity: 0.45, scale: 1, position: [0, 1.505, 0.1] },
-  femalegi: { src: "/images/organs/gi_oral.webp", width: 0.22, opacity: 0.3, scale: .95, position: [0, 1.42, 0.009] },
+  femaleeyes: { src: "/images/organs/eyes.webp", width: 0.12, opacity: 0.4, scale: 1, position: [0, 1.505, 0.1] },
+  femaleoral: { src: "/images/organs/gi_oral.webp", width: 0.22, opacity: 0.3, scale: .9, position: [0, 1.42, 0.009], pinTo: "position" },
   femalethyroid: { src: "/images/organs/thyroid.webp", width: 0.12, opacity: 0.25, scale: .7 },
   femaleheart: { src: "/images/organs/heart_vascular.webp", width: 0.2, opacity: 0.25, scale: .9,  modelOffset: [-.035, -0.02], position: [-0.0, 1.22, 0.1]},
   femaleblood: { src: "/images/organs/blood.webp", width: 0.2, opacity: 0.25, scale: .85, position: [0, 1.22, 0.1] },
   femalelungs: { src: "/images/organs/lungs.webp", width: 0.38, opacity: 0.25, scale: .8 , modelOffset: [.0, 0.05]},
   femaleliver: { src: "/images/organs/liver_biliary.webp", width: 0.26, opacity: 0.25, scale: .8, modelOffset: [0.05, -0.05] },
-  femalepancreas: { src: "/images/organs/pancreas.webp", width: 0.2, opacity: 0.25, scale: .9, position: [0.02, 1.13, 0.1] },
+  femalepancreas: { src: "/images/organs/pancreas.webp", width: 0.2, opacity: 0.25, scale: .9, position: [0.02, 1.13, 0.1],modelOffset: [.0, -0.05] },
   femalekidney: { src: "/images/organs/kidney_urinary.webp", width: 0.24, opacity: 0.3, scale: 1.9, modelOffset: [-0.01, -0.04]  },
-  femalegenitals: { src: "/images/organs/reproductive_female.webp", width: 0.2, opacity: 0.25, scale: 1, modelOffset: [0, 0.04], position: [0, 0.92, 0.1] },
+  femalegenitals: { src: "/images/organs/reproductive_female.webp", width: 0.2, opacity: 0.4, scale: 1, modelOffset: [-0.005, 0.02], position: [0, 0.92, 0.1] },
   // Bone & muscle: the thighs' region is BOTH thighs, so its center is
   // between the legs -- modelOffset x moves the picture onto one thigh.
   femalethighs: { src: "/images/organs/bone_muscle.webp", mirror: true, width: 0.16, opacity: 0.25, scale: 1.1, modelOffset: [0.09, 0], position: [0.09, 0.75, 0.08] },
@@ -408,16 +424,16 @@ const FEMALE_ORGAN_IMAGES: Record<string, OrganImage> = {
 // material slot names. Tune them separately from hers here.
 const MALE_ORGAN_IMAGES: Record<string, OrganImage> = {
   head3: { src: "/images/organs/brain.webp", width: 0.26, opacity: 0.25, scale: .97, modelOffset: [.015, -0.058] },
-  eyes: { src: "/images/organs/eyes.webp", width: 0.12, opacity: 0.45, scale: 1.2, position: [0, 1.538, 0.1] },
-  gi: { src: "/images/organs/gi_oral.webp", width: 0.22, opacity: 0.25, scale: 1, position: [0, 1.44, 0.04] },
+  eyes: { src: "/images/organs/eyes.webp", width: 0.12, opacity: 0.25, scale: 1.2, position: [0, 1.538, 0.1] },
+  oral: { src: "/images/organs/gi_oral.webp", width: 0.22, opacity: 0.25, scale: 1, position: [0, 1.44, 0.04], pinTo: "position" },
   thyroid2: { src: "/images/organs/thyroid.webp", width: 0.12, opacity: 0.25, scale: .7 },
   heart3: { src: "/images/organs/heart_vascular.webp", width: 0.2, opacity: 0.25, scale: .9,  modelOffset: [-.008, 0] },
   blood: { src: "/images/organs/blood.webp", width: 0.2, opacity: 0.25, scale: 1, position: [0., 1.22, 0.1] },
   lungs3: { src: "/images/organs/lungs.webp", width: 0.38, opacity: 0.25, scale: .85 , modelOffset: [-0.004, 0.083]},
   liver3: { src: "/images/organs/liver_biliary.webp", width: 0.26, opacity: 0.25, scale: .85, modelOffset: [0.01, -0.03] },
-  pancreas: { src: "/images/organs/pancreas.webp", width: 0.2, opacity: 0.25, scale: 1, position: [0.02, 1.15, 0.1] },
+  pancreas: { src: "/images/organs/pancreas.webp", width: 0.2, opacity: 0.25, scale: 1, position: [-0.02, 1.08, 0.1] },
   kidney4: { src: "/images/organs/kidney_urinary.webp", width: 0.24, opacity: 0.25, scale: 2.1, modelOffset: [-0.01, -0.04]  },
-  genitals: { src: "/images/organs/reproductive_male.webp", width: 0.12, opacity: 0.25, scale: 1, modelOffset: [0, 0.04], position: [0, 0.9, 0.1] },
+  genitals: { src: "/images/organs/reproductive_male.webp", width: 0.12, opacity: 0.4, scale: 1, modelOffset: [0, 0.02], position: [0, 0.9, 0.1] },
   // Bone & muscle on one thigh -- see the note in the female table.
   thighs: { src: "/images/organs/bone_muscle.webp", mirror: true, width: 0.16, opacity: 0.25, scale: 1.2, modelOffset: [0.08, -0.04], position: [0.1, 0.78, 0.08] },
   // Feet: the same picture on both calves.
@@ -2261,6 +2277,14 @@ function PosableModel({
         ? 1
         : 0;
 
+    // The region whose dots change. Normally the active one; with the
+    // images hidden, a region listed in HIDE_ORGANS_DOT_REGION colors the
+    // region it borrows instead.
+    const dotRegion =
+      hideOrgans && activeRegion
+        ? (HIDE_ORGANS_DOT_REGION[activeRegion] ?? activeRegion)
+        : activeRegion;
+
     let warnedMissingRegion = false;
 
     scene.traverse((obj) => {
@@ -2283,13 +2307,13 @@ function PosableModel({
       fromAttr.needsUpdate = true;
 
       const fields = fieldsByMesh.get(mesh.uuid);
-      const target = activeRegion ? fields?.[activeRegion] : undefined;
+      const target = dotRegion ? fields?.[dotRegion] : undefined;
 
-      if (activeRegion && !target && !warnedMissingRegion) {
+      if (dotRegion && !target && !warnedMissingRegion) {
         warnedMissingRegion = true;
         // eslint-disable-next-line no-console
         console.warn(
-          `PosableModel: no material slot named "${activeRegion}" found in ${modelPath}.`
+          `PosableModel: no material slot named "${dotRegion}" found in ${modelPath}.`
         );
       }
 
@@ -2507,7 +2531,11 @@ function PosableModel({
         1,
         Math.max(0, overlay.fade * (placement.opacity ?? 1) * ORGAN_IMAGE_OPACITY)
       );
-      if (!computeRegionCenter(overlay.samples, overlay.cfg.center ?? "mean", _center)) {
+      const usePosition = overlay.cfg.pinTo === "position" && !!overlay.cfg.position;
+      if (
+        usePosition ||
+        !computeRegionCenter(overlay.samples, overlay.cfg.center ?? "mean", _center)
+      ) {
         // No slot on the model: the fixed position instead (the
         // modelOffset below already holds the nudge, so start from it bare).
         if (!overlay.cfg.position) {

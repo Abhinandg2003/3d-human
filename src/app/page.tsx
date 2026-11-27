@@ -217,7 +217,7 @@ const healthDataByView: Record<ViewKey, HealthPanelData> = {
       { title: "Blink Rate", value: "14", unit: "/min", status: "Normal", statusColor: "yellow" },
     ],
   },
-  gi: {
+  oral: {
     summary: {
       title: "GI & Oral Health",
       description:
