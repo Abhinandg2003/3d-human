@@ -201,7 +201,134 @@ const healthDataByView: Record<ViewKey, HealthPanelData> = {
 //   ],
 // },
 
-
+  eyes: {
+    summary: {
+      title: "Eye Health",
+      description:
+        "Vision and eye health indicators are within a healthy range. Mild screen-related strain is the only thing worth keeping an eye on.",
+      score: 81,
+    },
+    metrics: [
+      { title: "Visual Acuity", value: "20/20", unit: "", status: "Optimal", statusColor: "green" },
+      { title: "Eye Pressure", value: "15", unit: "mmHg", status: "Optimal", statusColor: "green" },
+      { title: "Screen Strain", value: "Mild", unit: "", status: "Normal", statusColor: "yellow" },
+      { title: "Tear Film", value: "11", unit: "sec", status: "Optimal", statusColor: "green" },
+      { title: "Night Vision", value: "88", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Blink Rate", value: "14", unit: "/min", status: "Normal", statusColor: "yellow" },
+    ],
+  },
+  gi: {
+    summary: {
+      title: "GI & Oral Health",
+      description:
+        "Digestive and oral health markers look good overall. Fibre intake is a little under target, which can affect gut regularity.",
+      score: 74,
+    },
+    metrics: [
+      { title: "Gut Microbiome", value: "82", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Fibre Intake", value: "21", unit: "g/day", status: "Normal", statusColor: "yellow" },
+      { title: "Oral Hygiene", value: "90", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Acid Reflux", value: "Rare", unit: "", status: "Optimal", statusColor: "green" },
+      { title: "Digestion Time", value: "32", unit: "hrs", status: "Optimal", statusColor: "green" },
+      { title: "Gum Health", value: "86", unit: "/100", status: "Optimal", statusColor: "green" },
+    ],
+  },
+  blood: {
+    summary: {
+      title: "Blood Health",
+      description:
+        "Blood markers are within healthy ranges. Iron stores are on the lower side of normal and worth re-checking at the next panel.",
+      score: 79,
+    },
+    metrics: [
+      { title: "Hemoglobin", value: "13.8", unit: "g/dL", status: "Optimal", statusColor: "green" },
+      { title: "Ferritin", value: "38", unit: "ng/mL", status: "Normal", statusColor: "yellow" },
+      { title: "White Cell Count", value: "6.1", unit: "K/uL", status: "Optimal", statusColor: "green" },
+      { title: "Platelets", value: "248", unit: "K/uL", status: "Optimal", statusColor: "green" },
+      { title: "LDL Cholesterol", value: "96", unit: "mg/dL", status: "Optimal", statusColor: "green" },
+      { title: "Fasting Glucose", value: "88", unit: "mg/dL", status: "Optimal", statusColor: "green" },
+    ],
+  },
+  pancreas: {
+    summary: {
+      title: "Pancreas Health",
+      description:
+        "Pancreatic function and blood sugar regulation are within healthy limits, with stable insulin response after meals.",
+      score: 83,
+    },
+    metrics: [
+      { title: "HbA1c", value: "5.2", unit: "%", status: "Optimal", statusColor: "green" },
+      { title: "Fasting Insulin", value: "6.4", unit: "uIU/mL", status: "Optimal", statusColor: "green" },
+      { title: "Insulin Sensitivity", value: "84", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Lipase", value: "32", unit: "U/L", status: "Optimal", statusColor: "green" },
+      { title: "Amylase", value: "64", unit: "U/L", status: "Optimal", statusColor: "green" },
+      { title: "Post-meal Glucose", value: "128", unit: "mg/dL", status: "Normal", statusColor: "yellow" },
+    ],
+  },
+  genitals: {
+    summary: {
+      title: "Reproductive Health",
+      description:
+        "Reproductive health indicators are within a healthy range, with balanced hormone levels and no signs of inflammation.",
+      score: 87,
+    },
+    metrics: [
+      { title: "Hormonal Balance", value: "91", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Circulation", value: "88", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Fertility Index", value: "84", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Pelvic Health", value: "93", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Cycle Regularity", value: "89", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Inflammation", value: "Low", unit: "", status: "Optimal", statusColor: "green" },
+    ],
+  },
+  bones: {
+    summary: {
+      title: "Bone & Muscle Health",
+      description:
+        "Bone density and muscle mass are within a healthy range. Vitamin D is slightly low, which matters for long-term bone strength.",
+      score: 72,
+    },
+    metrics: [
+      { title: "Bone Density", value: "1.1", unit: "T-score", status: "Optimal", statusColor: "green" },
+      { title: "Muscle Mass", value: "27.4", unit: "kg", status: "Optimal", statusColor: "green" },
+      { title: "Vitamin D", value: "28", unit: "ng/mL", status: "Normal", statusColor: "yellow" },
+      { title: "Calcium", value: "9.4", unit: "mg/dL", status: "Optimal", statusColor: "green" },
+      { title: "Grip Strength", value: "38", unit: "kg", status: "Normal", statusColor: "yellow" },
+      { title: "Joint Mobility", value: "86", unit: "/100", status: "Optimal", statusColor: "green" },
+    ],
+  },
+  mental: {
+    summary: {
+      title: "Mental Health",
+      description:
+        "Mood, stress and sleep indicators are in a healthy range overall. Stress has been slightly elevated on workdays and is worth watching.",
+      score: 76,
+    },
+    metrics: [
+      { title: "Mood Score", value: "82", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Stress Level", value: "41", unit: "/100", status: "Normal", statusColor: "yellow" },
+      { title: "Sleep Quality", value: "84", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Anxiety Index", value: "Low", unit: "", status: "Optimal", statusColor: "green" },
+      { title: "Focus Duration", value: "46", unit: "min avg", status: "Optimal", statusColor: "green" },
+      { title: "Recovery Balance", value: "68", unit: "/100", status: "Normal", statusColor: "yellow" },
+    ],
+  },
+  feet: {
+    summary: {
+      title: "Feet Health",
+      description:
+        "Lower-leg strength, circulation and balance are within a healthy range. Ankle mobility is slightly limited on one side.",
+      score: 80,
+    },
+    metrics: [
+      { title: "Calf Strength", value: "88", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Circulation", value: "92", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Ankle Mobility", value: "74", unit: "%", status: "Normal", statusColor: "yellow" },
+      { title: "Arch Support", value: "85", unit: "/100", status: "Optimal", statusColor: "green" },
+      { title: "Left-Right Balance", value: "96", unit: "%", status: "Optimal", statusColor: "green" },
+      { title: "Daily Steps", value: "8,400", unit: "steps", status: "Normal", statusColor: "yellow" },
+    ],
+  },
 };
 
 // Ring geometry -- matches the existing viewBox="0 0 60 60" circle at r=27.

@@ -47,14 +47,21 @@ import { loadDotBake, saveDotBake } from "./dotBakeCache";
 export type ViewKey =
   | "reset"
   | "head2"
-  | "heart"
-  // | "arms"
-  | "kidney"
+  | "mental"
+  | "eyes"
+  | "gi"
   | "thyroid"
-  | "liver"
+  | "heart"
+  | "blood"
   | "lungs"
+  | "liver"
+  | "pancreas"
+  | "kidney"
+  | "genitals"
+  | "bones"
+  | "feet";
+  // | "arms"
   // | "thighs"
-  // | "genitals"
   // | "calves";
 type Vector3Tuple = [number, number, number];
 
@@ -67,16 +74,31 @@ const VIEWS: Record<
   ViewKey,
   { label: string; camPos: Vector3Tuple; target: Vector3Tuple }
 > = {
+  // The order here is the order of the sidebar buttons. Brain / Mental
+  // Health and Bone & Muscle / Feet share a picture, so they are kept apart.
   reset: { label: "Full Body", camPos: [-0.25, 1.45, 1.35], target: [-0.1, 1.38, 0] },
   head2: { label: "Brain", camPos: [-0.75, 1.75, 0.85], target: [0, 1.4, 0] },
-  heart: { label: "Heart", camPos: [0.45, 1.45, 1.25], target: [0, 1.38, 0] },
-  // arms: { label: "Arms", camPos: [0.7, 1.35, 1.3], target: [0.5, 1.25, 0] },
-  kidney: { label: "Kidney", camPos: [0, 1.25, 0.85], target: [0, 1.17, 0] },
+  eyes: { label: "Eyes", camPos: [0, 1.52, 0.6], target: [0, 1.5, 0] },
+  // Seen from her left side, so her face points to the left of the screen
+  // -- the same way the GI & oral picture is drawn.
+  gi: { label: "GI & Oral", camPos: [0.75, 1.46, 0.05], target: [0, 1.44, 0.02] },
   thyroid: { label: "Thyroid", camPos: [0.25, 1.15, 0.7], target: [0, 1.4, 0] },
-  liver: { label: "Liver", camPos: [-0.45, 1.25, 0.6], target: [0, 1.18, 0] },
+  bones: { label: "Bone & Muscle", camPos: [-0, 0.65, 1.25], target: [0, 0.75, 0] },
+  heart: { label: "Heart", camPos: [0.45, 1.45, 1.25], target: [0, 1.38, 0] },
+  blood: { label: "Blood", camPos: [0, 1.35, 1.0], target: [0, 1.28, 0] },
   lungs: { label: "Lungs", camPos: [-0, 1.35, 0.9], target: [0, 1.28, 0] },
+  liver: { label: "Liver", camPos: [-0.45, 1.25, 0.6], target: [0, 1.18, 0] },
+  pancreas: { label: "Pancreas", camPos: [0, 1.22, 0.8], target: [0, 1.14, 0] },
+  kidney: { label: "Kidney", camPos: [0, 1.25, 0.85], target: [0, 1.1, 0] },
+  genitals: { label: "Reproductive", camPos: [-0, 1.05, 1.0], target: [0, 0.9, 0] },
+  // Same region, image and pose as Brain, with its own button and data.
+  // The camera sits a little further round to the front and lower than
+  // Brain's, so choosing it visibly moves the view.
+  mental: { label: "Mental Health", camPos: [-0.8, 1.7, .9], target: [0, 1.4, 0] },
+  // The calves, seen from the front.
+  feet: { label: "Feet", camPos: [-0, 0.5, -1.25], target: [0, 0.35, 0] },
+  // arms: { label: "Arms", camPos: [0.7, 1.35, 1.3], target: [0.5, 1.25, 0] },
   // thighs: { label: "Thighs", camPos: [-0, 0.65, 1.25], target: [0, 0.75, 0] },
-  // genitals: { label: "Genitals", camPos: [-0, 1.2, 1.25], target: [0, 0.85, 0] },
   // calves: { label: "Calves", camPos: [-0, 0.45, -1.25], target: [0, 0.38, 0] },
 };
 
@@ -89,30 +111,40 @@ const VIEWS: Record<
 const FEMALE_POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   reset: "default",
   head2: "default",
-  heart: "default",
-  // arms: "arm",
-  kidney: "default",
+  mental: "default",
+  eyes: "default",
+  gi: "default",
   thyroid: "head2",
-  liver: "default",
+  heart: "default",
+  blood: "default",
   lungs: "default",
-  // thighs: "default",
-  // genitals: "default",
-  // calves: "default",
+  liver: "default",
+  pancreas: "default",
+  kidney: "default",
+  genitals: "default",
+  bones: "default",
+  feet: "default",
+  // arms: "arm",
 };
 
 // The man's pose clips (Man_Mesh_clean9.glb has: default, head, heart, arm).
 const MALE_POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
   reset: "default",
   head2: "head",
-  heart: "default",
-  // arms: "arm",
-  kidney: "default",
+  mental: "head",
+  eyes: "default",
+  gi: "default",
   thyroid: "head",
-  liver: "default",
+  heart: "default",
+  blood: "default",
   lungs: "default",
-  // thighs: "default",
-  // genitals: "default",
-  // calves: "default",
+  liver: "default",
+  pancreas: "default",
+  kidney: "default",
+  genitals: "default",
+  bones: "default",
+  feet: "default",
+  // arms: "arm",
 };
 
 // Maps each view/button to the name of the MATERIAL SLOT (assigned to a
@@ -126,14 +158,24 @@ const MALE_POSE_ACTION_NAMES: Record<ViewKey, string | null> = {
 const FEMALE_HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
   head2: "femalebrainfinal",
-  heart: "femaleheart",
-  // arms: "femalearms",
-  kidney: "femalekidney",
+  mental: "femalebrainfinal",
+  // TODO(material slots): "femaleeyes", "femalegi", "femaleblood" and
+  // "femalepancreas" don't exist in the GLB yet. Until they do, their
+  // images sit at the fixed `position` given in FEMALE_ORGAN_IMAGES and no
+  // dots fade. Rename these to the real slot names once they are painted.
+  eyes: "femaleeyes",
+  gi: "femalegi",
   thyroid: "femalethyroid",
-  liver: "femaleliver",
+  heart: "femaleheart",
+  blood: "femaleheart",
   lungs: "femalelungs",
-  // thighs: "femalethighs",
-  // genitals: "femalegenitals",
+  liver: "femaleliver",
+  pancreas: "femalepancreas",
+  kidney: "femalekidney",
+  genitals: "femalegenitals",
+  bones: "femalethighs",
+  feet: "femalecalves",
+  // arms: "femalearms",
   // calves: "femalecalves",
 };
 
@@ -141,14 +183,22 @@ const FEMALE_HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
 const MALE_HIGHLIGHT_REGION_NAMES: Record<ViewKey, string | null> = {
   reset: null,
   head2: "head3",
-  heart: "heart3",
-  // arms: "hands5",
-  kidney: "kidney4",
+  mental: "head3",
+  // TODO(material slots): "eyes", "gi", "blood" and "pancreas" don't
+  // exist in the GLB yet -- see the note in the female map above.
+  eyes: "eyes",
+  gi: "gi",
   thyroid: "thyroid2",
-  liver: "liver3",
+  heart: "heart3",
+  blood: "blood",
   lungs: "lungs3",
-  // thighs: "thighs",
-  // genitals: "genitals",
+  liver: "liver3",
+  pancreas: "pancreas",
+  kidney: "kidney4",
+  genitals: "genitals",
+  bones: "thighs",
+  feet: "calves",
+  // arms: "hands5",
   // calves: "calves",
 };
 
@@ -289,39 +339,89 @@ interface OrganImage extends OrganImagePlacement {
   anchor?: [number, number];
   rotation?: number;
   center?: "mean" | "bounds";
+  // true = a second copy of the picture is drawn on the other side of
+  // her body, flipped left-right: same height, opposite x (modelOffset,
+  // position and offset all mirrored). For paired parts -- one thigh's
+  // setting gives both thighs.
+  mirror?: boolean;
+  // Where the image sits when the model has NO material slot with this
+  // organ's name (yet): a fixed spot in meters, [x, y, z] -- x: + = her
+  // left side (right of the screen from the front), y: height above the
+  // floor, z: + = in front of her. Ignored as soon as the slot exists;
+  // the image is then pinned to the slot's center and follows the pose.
+  // modelOffset / offset are still added on top either way.
+  position?: [number, number, number];
   // Overrides ORGAN_IMAGE_BLACK_AND_WHITE for this organ only.
   blackAndWhite?: boolean;
+  // Overrides ORGAN_IMAGE_COLOR for this organ only (null = its own colors).
+  color?: string | null;
   responsive?: Partial<Record<ScreenSize, Partial<OrganImagePlacement>>>;
+}
+
+/** The same placement on the other side of the body (x flipped). */
+function mirrorPlacement<T extends Partial<OrganImagePlacement>>(placement: T): T {
+  const { modelOffset, offset } = placement;
+  return {
+    ...placement,
+    ...(modelOffset && { modelOffset: [-modelOffset[0], modelOffset[1], modelOffset[2] ?? 0] }),
+    ...(offset && { offset: [-offset[0], offset[1]] }),
+  };
+}
+
+/** An organ image's settings for its mirrored copy (see `mirror`). */
+function mirrorOrganImage(cfg: OrganImage): OrganImage {
+  const mirrored: OrganImage = mirrorPlacement(cfg);
+  if (cfg.position) mirrored.position = [-cfg.position[0], cfg.position[1], cfg.position[2]];
+  if (cfg.anchor) mirrored.anchor = [1 - cfg.anchor[0], cfg.anchor[1]];
+  if (cfg.rotation) mirrored.rotation = -cfg.rotation;
+  if (cfg.responsive) {
+    mirrored.responsive = {};
+    for (const size of Object.keys(cfg.responsive) as ScreenSize[]) {
+      mirrored.responsive[size] = mirrorPlacement(cfg.responsive[size] ?? {});
+    }
+  }
+  return mirrored;
 }
 
 // Keyed by material slot name, same as the highlight maps. The sizes and
 // offsets below are starting guesses -- tune them per organ.
 // A file that doesn't exist is silently skipped (that region stays blank).
 const FEMALE_ORGAN_IMAGES: Record<string, OrganImage> = {
-  femalebrainfinal: { src: "/images/organs/brain_dots.webp", width: 0.26, opacity: 0.5, scale: .85, modelOffset: [.025, -0.05] },
-  femaleheart: { src: "/images/organs/heart_dots.webp", width: 0.2, opacity: 0.6, scale: .8,  modelOffset: [-.025, 0] },
-  femalelungs: { src: "/images/organs/lungs_dots.webp", width: 0.38, opacity: 0.4, scale: .8 , modelOffset: [.0, 0.05]},
-  femaleliver: { src: "/images/organs/liver_dots.webp", width: 0.26, opacity: 0.6, scale: .8, modelOffset: [0.05, -0.05] },
-  femalekidney: { src: "/images/organs/kidneys_dots.webp", width: 0.24, opacity: 0.6, scale: 1.2, modelOffset: [-0.01, 0]  },
-  femalethyroid: { src: "/images/organs/thyroid_dots.webp", width: 0.12, opacity: 0.6, scale: .7 },
-  femalearms: { src: "/images/organs/arms_dots.webp", width: 0.5, opacity: 0.4, scale: 1, center: "bounds" },
-  femalethighs: { src: "/images/organs/thighs_dots.webp", width: 0.4, opacity: 0.4, scale: 1 },
-  femalegenitals: { src: "/images/organs/genitals_dots.webp", width: 0.2, opacity: 0.4, scale: 1 },
-  femalecalves: { src: "/images/organs/calves_dots.webp", width: 0.3, opacity: 0.4, scale: 1 },
+  femalebrainfinal: { src: "/images/organs/brain.webp", width: 0.26, opacity: 0.25, scale: .85, modelOffset: [.025, -0.05] },
+  femaleeyes: { src: "/images/organs/eyes.webp", width: 0.12, opacity: 0.45, scale: 1, position: [0, 1.505, 0.1] },
+  femalegi: { src: "/images/organs/gi_oral.webp", width: 0.22, opacity: 0.3, scale: .95, position: [0, 1.42, 0.009] },
+  femalethyroid: { src: "/images/organs/thyroid.webp", width: 0.12, opacity: 0.25, scale: .7 },
+  femaleheart: { src: "/images/organs/heart_vascular.webp", width: 0.2, opacity: 0.25, scale: .9,  modelOffset: [-.035, -0.02], position: [-0.0, 1.22, 0.1]},
+  femaleblood: { src: "/images/organs/blood.webp", width: 0.2, opacity: 0.25, scale: .85, position: [0, 1.22, 0.1] },
+  femalelungs: { src: "/images/organs/lungs.webp", width: 0.38, opacity: 0.25, scale: .8 , modelOffset: [.0, 0.05]},
+  femaleliver: { src: "/images/organs/liver_biliary.webp", width: 0.26, opacity: 0.25, scale: .8, modelOffset: [0.05, -0.05] },
+  femalepancreas: { src: "/images/organs/pancreas.webp", width: 0.2, opacity: 0.25, scale: .9, position: [0.02, 1.13, 0.1] },
+  femalekidney: { src: "/images/organs/kidney_urinary.webp", width: 0.24, opacity: 0.3, scale: 1.9, modelOffset: [-0.01, -0.04]  },
+  femalegenitals: { src: "/images/organs/reproductive_female.webp", width: 0.2, opacity: 0.25, scale: 1, modelOffset: [0, 0.04], position: [0, 0.92, 0.1] },
+  // Bone & muscle: the thighs' region is BOTH thighs, so its center is
+  // between the legs -- modelOffset x moves the picture onto one thigh.
+  femalethighs: { src: "/images/organs/bone_muscle.webp", mirror: true, width: 0.16, opacity: 0.25, scale: 1.1, modelOffset: [0.09, 0], position: [0.09, 0.75, 0.08] },
+  // Feet: the same picture on both calves (the region is BOTH calves).
+  femalecalves: { src: "/images/organs/bone_muscle.webp", mirror: true, width: 0.12, opacity: 0.25, scale: 1.3, modelOffset: [0.085, 0], position: [0.075, 0.33, 0.05] },
 };
 // Same images and settings as the female model, keyed by the man's own
 // material slot names. Tune them separately from hers here.
 const MALE_ORGAN_IMAGES: Record<string, OrganImage> = {
-  head3: { src: "/images/organs/brain_dots.webp", width: 0.26, opacity: 0.5, scale: .93, modelOffset: [.015, -0.055] },
-  heart3: { src: "/images/organs/heart_dots.webp", width: 0.2, opacity: 0.6, scale: .85,  modelOffset: [-.008, 0] },
-  lungs3: { src: "/images/organs/lungs_dots.webp", width: 0.38, opacity: 0.3, scale: .9 , modelOffset: [-0.004, 0.07]},
-  liver3: { src: "/images/organs/liver_dots.webp", width: 0.26, opacity: 0.6, scale: .8, modelOffset: [0.01, -0.03] },
-  kidney4: { src: "/images/organs/kidneys_dots.webp", width: 0.24, opacity: 0.6, scale: 1.3, modelOffset: [-0.01, 0]  },
-  thyroid2: { src: "/images/organs/thyroid_dots.webp", width: 0.12, opacity: 0.6, scale: .7 },
-  hands5: { src: "/images/organs/arms_dots.webp", width: 0.5, opacity: 0.4, scale: 1, center: "bounds" },
-  thighs: { src: "/images/organs/thighs_dots.webp", width: 0.4, opacity: 0.4, scale: 1 },
-  genitals: { src: "/images/organs/genitals_dots.webp", width: 0.2, opacity: 0.4, scale: 1 },
-  calves: { src: "/images/organs/calves_dots.webp", width: 0.3, opacity: 0.4, scale: 1 },
+  head3: { src: "/images/organs/brain.webp", width: 0.26, opacity: 0.25, scale: .97, modelOffset: [.015, -0.058] },
+  eyes: { src: "/images/organs/eyes.webp", width: 0.12, opacity: 0.45, scale: 1.2, position: [0, 1.538, 0.1] },
+  gi: { src: "/images/organs/gi_oral.webp", width: 0.22, opacity: 0.25, scale: 1, position: [0, 1.44, 0.04] },
+  thyroid2: { src: "/images/organs/thyroid.webp", width: 0.12, opacity: 0.25, scale: .7 },
+  heart3: { src: "/images/organs/heart_vascular.webp", width: 0.2, opacity: 0.25, scale: .9,  modelOffset: [-.008, 0] },
+  blood: { src: "/images/organs/blood.webp", width: 0.2, opacity: 0.25, scale: 1, position: [0., 1.22, 0.1] },
+  lungs3: { src: "/images/organs/lungs.webp", width: 0.38, opacity: 0.25, scale: .85 , modelOffset: [-0.004, 0.083]},
+  liver3: { src: "/images/organs/liver_biliary.webp", width: 0.26, opacity: 0.25, scale: .85, modelOffset: [0.01, -0.03] },
+  pancreas: { src: "/images/organs/pancreas.webp", width: 0.2, opacity: 0.25, scale: 1, position: [0.02, 1.15, 0.1] },
+  kidney4: { src: "/images/organs/kidney_urinary.webp", width: 0.24, opacity: 0.25, scale: 2.1, modelOffset: [-0.01, -0.04]  },
+  genitals: { src: "/images/organs/reproductive_male.webp", width: 0.12, opacity: 0.25, scale: 1, modelOffset: [0, 0.04], position: [0, 0.9, 0.1] },
+  // Bone & muscle on one thigh -- see the note in the female table.
+  thighs: { src: "/images/organs/bone_muscle.webp", mirror: true, width: 0.16, opacity: 0.25, scale: 1.2, modelOffset: [0.08, -0.04], position: [0.1, 0.78, 0.08] },
+  // Feet: the same picture on both calves.
+  calves: { src: "/images/organs/bone_muscle.webp", mirror: true, width: 0.12, opacity: 0.25, scale: 1.5, modelOffset: [0.11, -0.035], position: [0.08, 0.30, 0.05] },
 };
 
 // --- Image tuning knobs (apply to EVERY organ image, on top of each
@@ -350,7 +450,32 @@ const ORGAN_IMAGE_MAX_SCREEN_FRACTION = 0.9;
 // Black & white mode: true = every organ image is drawn in greyscale
 // (its colors removed, light and dark kept), false = in its own colors.
 // One organ can go against this with its own `blackAndWhite: true/false`.
-const ORGAN_IMAGE_BLACK_AND_WHITE = true;
+const ORGAN_IMAGE_BLACK_AND_WHITE = false;
+// Recolor: changes the images' color in code, without touching the files.
+// Every pixel's HUE is replaced with this color's hue, while its own
+// lightness and richness are kept -- so a picture made of many different
+// blues becomes the same picture in many different greens (or reds, ...),
+// not a flat fill.
+//   COLOR            - any CSS color ("#24bd89", "tomato"), or null to
+//                      keep the files' own colors. Only its hue is used:
+//                      "#24bd89" and a darker green give the same result.
+//   COLOR_SATURATION - how rich the color is. 1 = as rich as the file,
+//                      0.5 = more muted, 1.5 = more vivid, 0 = grey.
+//   COLOR_BRIGHTNESS - 1 = as bright as the file, below = darker, above
+//                      = lighter.
+// One organ can have its own with `color: "#..."` (or `color: null` for
+// its original colors). Black & white mode, when on, wins over this.
+const ORGAN_IMAGE_COLOR: string | null = null;
+const ORGAN_IMAGE_COLOR_SATURATION = 1;
+const ORGAN_IMAGE_COLOR_BRIGHTNESS = 1;
+// Fill mode: how ORGAN_IMAGE_COLOR is applied.
+//   false = hue change (above): the picture keeps its light and dark
+//           shades, only moved to the new color.
+//   true  = flat fill: every visible pixel becomes EXACTLY that color, so
+//           the whole picture is one single shade. Only the picture's
+//           shape (its transparency) is kept. COLOR_SATURATION and
+//           COLOR_BRIGHTNESS do nothing in this mode.
+const ORGAN_IMAGE_COLOR_FILL_MODE = false;
 // How long (seconds) a newly selected organ's image waits before it
 // starts fading in, so the camera and the pose get a head start and the
 // previous image is on its way out. 0 = no wait. The old image starts
@@ -1942,99 +2067,140 @@ function PosableModel({
     const loader = new TextureLoader();
     const bodyMeshes = collectBodyMeshes(scene);
 
-    for (const [region, cfg] of Object.entries(organImages)) {
+    for (const [region, sourceCfg] of Object.entries(organImages)) {
       const meshes = bodyMeshes.filter((mesh) => getRegionName(mesh) === region);
-      if (meshes.length === 0) continue;
+      // No slot with this name: only shown if it has a fixed `position`.
+      if (meshes.length === 0 && !sourceCfg.position) continue;
       const samples = pickRegionSamples(meshes, ORGAN_CENTER_SAMPLES);
 
       loader.load(
-        cfg.src,
-        (texture) => {
+        sourceCfg.src,
+        (sourceTexture) => {
           if (cancelled) {
-            texture.dispose();
+            sourceTexture.dispose();
             return;
           }
-          texture.colorSpace = SRGBColorSpace;
-          const image = texture.image as { width: number; height: number };
+          sourceTexture.colorSpace = SRGBColorSpace;
+          const image = sourceTexture.image as { width: number; height: number };
           const aspect = image.width / image.height || 1;
 
-          const material = new SpriteMaterial({
-            map: texture,
-            transparent: true,
-            opacity: 0,
-            rotation: ((cfg.rotation ?? 0) * Math.PI) / 180,
-            // Drawn over the model, never cut by it.
-            depthTest: false,
-            depthWrite: false,
-            fog: false,
-            toneMapped: false,
-          });
-          // The image's own shader, with two small changes where it reads
-          // the picture: strips of it are shifted sideways while the glitch
-          // runs, and (in black & white mode) its color is replaced with
-          // its brightness.
-          const blackAndWhite = cfg.blackAndWhite ?? ORGAN_IMAGE_BLACK_AND_WHITE;
-          const glitch = { value: 0 };
-          const glitchSeed = { value: 0 };
-          material.onBeforeCompile = (shader) => {
-            shader.uniforms.uGlitch = glitch;
-            shader.uniforms.uGlitchSeed = glitchSeed;
-            shader.fragmentShader =
-              "uniform float uGlitch;\nuniform float uGlitchSeed;\n" +
-              shader.fragmentShader.replace(
-                "#include <map_fragment>",
-                `
-                vec2 glitchUv = vMapUv;
-                if ( uGlitch > 0.0 ) {
-                  float band = floor( glitchUv.y * ${ORGAN_IMAGE_GLITCH_BANDS.toFixed(1)} );
-                  float jump = fract( sin( band * 12.9898 + uGlitchSeed * 78.233 ) * 43758.5453 );
-                  // About half the strips jump each shuffle; the rest stay put.
-                  float moves = step( 0.5, fract( jump * 7.31 ) );
-                  glitchUv.x += ( jump - 0.5 ) * 2.0 * moves * uGlitch * ${ORGAN_IMAGE_GLITCH_SHIFT.toFixed(4)};
-                }
-                vec4 sampledDiffuseColor = texture2D( map, glitchUv );
-                // A strip pushed past the picture's edge shows nothing there.
-                sampledDiffuseColor.a *= step( 0.0, glitchUv.x ) * step( glitchUv.x, 1.0 );
-                diffuseColor *= sampledDiffuseColor;
-                ${
-                  blackAndWhite
-                    ? "diffuseColor.rgb = vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) );"
-                    : ""
-                }`
-              );
-          };
-          // Its own shader program, not shared with any other sprite.
-          material.customProgramCacheKey = () =>
-            `organ-image-${blackAndWhite ? "bw" : "color"}-${ORGAN_IMAGE_GLITCH_BANDS}-${ORGAN_IMAGE_GLITCH_SHIFT}`;
-          const sprite = new Sprite(material);
-          sprite.name = `${region}-organ-image`;
-          // The sprite always faces the camera. Its size is set every
-          // frame (see the render pass), from the image knobs.
-          // Which point of the image sits on the region's center.
-          const [anchorX, anchorY] = cfg.anchor ?? [0.5, 0.5];
-          sprite.center.set(anchorX, anchorY);
-          sprite.frustumCulled = false;
-          // After the dots (10).
-          sprite.renderOrder = 20;
-          sprite.visible = false;
-          parent.add(sprite);
+          // One sprite, or two when the organ is mirrored: the second is
+          // the same picture flipped left-right, on the other side of her.
+          const copies = [{ cfg: sourceCfg, texture: sourceTexture }];
+          if (sourceCfg.mirror) {
+            const flipped = sourceTexture.clone();
+            flipped.repeat.x = -1;
+            flipped.offset.x = 1;
+            flipped.needsUpdate = true;
+            copies.push({ cfg: mirrorOrganImage(sourceCfg), texture: flipped });
+          }
+          for (const { cfg, texture } of copies) {
+            const material = new SpriteMaterial({
+              map: texture,
+              transparent: true,
+              opacity: 0,
+              rotation: ((cfg.rotation ?? 0) * Math.PI) / 180,
+              // Drawn over the model, never cut by it.
+              depthTest: false,
+              depthWrite: false,
+              fog: false,
+              toneMapped: false,
+            });
+            // The image's own shader, with two small changes where it reads
+            // the picture: strips of it are shifted sideways while the glitch
+            // runs, and (in black & white mode) its color is replaced with
+            // its brightness.
+            const blackAndWhite = cfg.blackAndWhite ?? ORGAN_IMAGE_BLACK_AND_WHITE;
+            // Recolor: the hue (0..1) every pixel is moved to, if any.
+            const recolor = cfg.color !== undefined ? cfg.color : ORGAN_IMAGE_COLOR;
+            // Fill mode: the one flat color (linear RGB) every pixel gets.
+            const fill =
+              recolor && !blackAndWhite && ORGAN_IMAGE_COLOR_FILL_MODE ? new Color(recolor) : null;
+            const recolorHue =
+              recolor && !blackAndWhite && !fill
+                ? new Color(recolor).getHSL({ h: 0, s: 0, l: 0 }).h
+                : null;
+            const glitch = { value: 0 };
+            const glitchSeed = { value: 0 };
+            material.onBeforeCompile = (shader) => {
+              shader.uniforms.uGlitch = glitch;
+              shader.uniforms.uGlitchSeed = glitchSeed;
+              shader.fragmentShader =
+                "uniform float uGlitch;\nuniform float uGlitchSeed;\n" +
+                shader.fragmentShader.replace(
+                  "#include <map_fragment>",
+                  `
+                  vec2 glitchUv = vMapUv;
+                  if ( uGlitch > 0.0 ) {
+                    float band = floor( glitchUv.y * ${ORGAN_IMAGE_GLITCH_BANDS.toFixed(1)} );
+                    float jump = fract( sin( band * 12.9898 + uGlitchSeed * 78.233 ) * 43758.5453 );
+                    // About half the strips jump each shuffle; the rest stay put.
+                    float moves = step( 0.5, fract( jump * 7.31 ) );
+                    glitchUv.x += ( jump - 0.5 ) * 2.0 * moves * uGlitch * ${ORGAN_IMAGE_GLITCH_SHIFT.toFixed(4)};
+                  }
+                  vec4 sampledDiffuseColor = texture2D( map, glitchUv );
+                  // A strip pushed past the picture's edge shows nothing there.
+                  sampledDiffuseColor.a *= step( 0.0, glitchUv.x ) * step( glitchUv.x, 1.0 );
+                  diffuseColor *= sampledDiffuseColor;
+                  ${
+                    blackAndWhite
+                      ? "diffuseColor.rgb = vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) );"
+                      : ""
+                  }
+                  ${
+                    fill
+                      ? `diffuseColor.rgb = vec3( ${fill.r.toFixed(5)}, ${fill.g.toFixed(5)}, ${fill.b.toFixed(5)} );`
+                      : ""
+                  }
+                  ${
+                    recolorHue === null
+                      ? ""
+                      : `{
+                    // The pixel's own richness and brightness (HSV), with the
+                    // new hue: back to RGB.
+                    float hi = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) );
+                    float lo = min( diffuseColor.r, min( diffuseColor.g, diffuseColor.b ) );
+                    float richness = clamp( ( hi - lo ) / max( hi, 1e-5 ) * ${ORGAN_IMAGE_COLOR_SATURATION.toFixed(4)}, 0.0, 1.0 );
+                    float brightness = clamp( hi * ${ORGAN_IMAGE_COLOR_BRIGHTNESS.toFixed(4)}, 0.0, 1.0 );
+                    vec3 pure = clamp( abs( fract( ${recolorHue.toFixed(5)} + vec3( 0.0, 2.0 / 3.0, 1.0 / 3.0 ) ) * 6.0 - 3.0 ) - 1.0, 0.0, 1.0 );
+                    diffuseColor.rgb = brightness * mix( vec3( 1.0 ), pure, richness );
+                  }`
+                  }`
+                );
+            };
+            // Its own shader program, not shared with any other sprite.
+            material.customProgramCacheKey = () =>
+              `organ-image-${blackAndWhite ? "bw" : "color"}-${fill ? fill.getHexString() : "nofill"}-${recolorHue}-${ORGAN_IMAGE_COLOR_SATURATION}-${ORGAN_IMAGE_COLOR_BRIGHTNESS}-${ORGAN_IMAGE_GLITCH_BANDS}-${ORGAN_IMAGE_GLITCH_SHIFT}`;
+            const sprite = new Sprite(material);
+            sprite.name = `${region}-organ-image`;
+            // The sprite always faces the camera. Its size is set every
+            // frame (see the render pass), from the image knobs.
+            // Which point of the image sits on the region's center.
+            const [anchorX, anchorY] = cfg.anchor ?? [0.5, 0.5];
+            sprite.center.set(anchorX, anchorY);
+            sprite.frustumCulled = false;
+            // After the dots (10).
+            sprite.renderOrder = 20;
+            sprite.visible = false;
+            parent.add(sprite);
 
-          created.push({
-            region,
-            cfg,
-            sprite,
-            material,
-            texture,
-            aspect,
-            samples,
-            fade: 0,
-            showing: false,
-            glitchAge: 0,
-            glitch,
-            glitchSeed,
-          });
-          overlaysRef.current = [...created];
-          setImageRegions((regions) => new Set(regions).add(region));
+            created.push({
+              region,
+              cfg,
+              sprite,
+              material,
+              texture,
+              aspect,
+              samples,
+              fade: 0,
+              showing: false,
+              glitchAge: 0,
+              glitch,
+              glitchSeed,
+            });
+            overlaysRef.current = [...created];
+            setImageRegions((regions) => new Set(regions).add(region));
+          }
         },
         undefined,
         () => {
@@ -2333,6 +2499,7 @@ function PosableModel({
       overlay.sprite.visible = show;
       if (!show) continue;
 
+      let fixedPosition = false;
       // This screen size's values, where the organ lists any.
       const placement = { ...overlay.cfg, ...overlay.cfg.responsive?.[screenSize] };
 
@@ -2341,12 +2508,20 @@ function PosableModel({
         Math.max(0, overlay.fade * (placement.opacity ?? 1) * ORGAN_IMAGE_OPACITY)
       );
       if (!computeRegionCenter(overlay.samples, overlay.cfg.center ?? "mean", _center)) {
-        overlay.sprite.visible = false;
-        continue;
+        // No slot on the model: the fixed position instead (the
+        // modelOffset below already holds the nudge, so start from it bare).
+        if (!overlay.cfg.position) {
+          overlay.sprite.visible = false;
+          continue;
+        }
+        _center.fromArray(overlay.cfg.position);
+        fixedPosition = true;
       }
       // modelOffset: meters along the model's own axes (she stands
       // unrotated in the world, so those are the world's axes too).
-      const [modelX, modelY, modelZ = 0] = placement.modelOffset ?? [0, 0];
+      // (A fixed position is the final spot: modelOffset is only for
+      // correcting a slot's center.)
+      const [modelX, modelY, modelZ = 0] = fixedPosition ? [0, 0, 0] : placement.modelOffset ?? [0, 0];
       _center.x += modelX;
       _center.y += modelY;
       _center.z += modelZ;
@@ -2554,7 +2729,7 @@ export default function ModelScene({ view, onViewChange, scores }: ModelScenePro
         <div className="w-full h-full bg-gradient-to-t from-[#f9f9f9] to-transparent" />
       </div>
 
-      <div className="absolute top-1/2 -translate-y-1/2 left-1 sm:left-2 flex flex-col items-start justify-center gap-2 sm:gap-3 px-2 sm:px-4">
+      <div className="absolute top-1/2 -translate-y-1/2 left-1 sm:left-2 flex flex-col items-start justify-center gap-1 sm:gap-1.5 px-2 sm:px-4">
         {(Object.keys(VIEWS) as ViewKey[]).map((key) => (
           <button
             key={key}
